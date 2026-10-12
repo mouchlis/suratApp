@@ -1,0 +1,6 @@
+{
+  "name": "Agenda Surat Sekolah",
+  "description": "Aplikasi manajemen agenda surat masuk dan surat keluar sekolah modern, aman, responsif dengan penyimpanan berkas permanen dan ekspor data.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
