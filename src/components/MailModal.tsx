@@ -13,10 +13,15 @@ import {
   Paperclip, 
   Building, 
   FileCheck,
-  ClipboardList
+  ClipboardList,
+  Sparkles,
+  Wand2,
+  Loader2,
+  Bot
 } from 'lucide-react';
 import { MailItem, MailType, MailCategory, MailAttachment } from '../types';
 import { getNextAgendaNumber } from '../lib/db';
+import { extractLetterDataFromDoc, ExtractedLetterData } from '../lib/aiExtractor';
 
 interface MailModalProps {
   isOpen: boolean;
@@ -64,6 +69,14 @@ export const MailModal: React.FC<MailModalProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+
+  // AI Auto-Detection states
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractionNotice, setExtractionNotice] = useState<{
+    message: string;
+    source: 'ai' | 'fallback';
+    fields: string[];
+  } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -129,9 +142,72 @@ export const MailModal: React.FC<MailModalProps> = ({
 
     setFileError(null);
     setFormErrors({});
+    setIsExtracting(false);
+    setExtractionNotice(null);
   }, [isOpen, initialMail, type, isMasuk]);
 
   if (!isOpen) return null;
+
+  // Trigger Automatic Field Extraction (AI / OCR)
+  const triggerAutoExtraction = async (dataUrl: string, fileName: string, fileType: string) => {
+    setIsExtracting(true);
+    setExtractionNotice(null);
+
+    try {
+      const extracted = await extractLetterDataFromDoc(dataUrl, fileName, fileType);
+      const filledFields: string[] = [];
+
+      if (extracted.nomorSurat) {
+        setNomorSurat(extracted.nomorSurat);
+        filledFields.push('Nomor Surat');
+      }
+      if (extracted.tanggalSurat) {
+        setTanggalSurat(extracted.tanggalSurat);
+        filledFields.push('Tanggal');
+      }
+      if (extracted.pengirim) {
+        if (isMasuk) {
+          setPengirim(extracted.pengirim);
+          filledFields.push('Pengirim');
+        } else {
+          setTujuan(extracted.pengirim);
+          filledFields.push('Tujuan');
+        }
+      }
+      if (extracted.perihal) {
+        setPerihal(extracted.perihal);
+        filledFields.push('Perihal');
+      }
+      if (extracted.sifat) {
+        setSifat(extracted.sifat);
+        filledFields.push('Sifat');
+      }
+      if (extracted.keterangan && !keterangan) {
+        setKeterangan(extracted.keterangan);
+      }
+
+      // Clear any validation errors for auto-filled fields
+      setFormErrors((prev) => {
+        const next = { ...prev };
+        delete next.nomorSurat;
+        delete next.tanggalSurat;
+        delete next.pengirim;
+        delete next.tujuan;
+        delete next.perihal;
+        return next;
+      });
+
+      setExtractionNotice({
+        message: `Otomatis mengisi: ${filledFields.join(', ')}`,
+        source: extracted.source,
+        fields: filledFields,
+      });
+    } catch (err) {
+      console.error('Extraction error:', err);
+    } finally {
+      setIsExtracting(false);
+    }
+  };
 
   // File processing and validation
   const handleProcessFile = (file: File) => {
@@ -150,16 +226,21 @@ export const MailModal: React.FC<MailModalProps> = ({
       return;
     }
 
+    const calculatedMime = file.type || (ext === 'pdf' ? 'application/pdf' : 'image/jpeg');
+
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
       setFileAttachment({
         fileName: file.name,
         fileSize: file.size,
-        fileType: file.type || (ext === 'pdf' ? 'application/pdf' : 'image/jpeg'),
+        fileType: calculatedMime,
         dataUrl: result,
         uploadedAt: new Date().toISOString(),
       });
+
+      // Trigger automatic field extraction
+      triggerAutoExtraction(result, file.name, calculatedMime);
     };
     reader.onerror = () => {
       setFileError('Gagal membaca file dari perangkat Anda.');
@@ -178,6 +259,12 @@ export const MailModal: React.FC<MailModalProps> = ({
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       handleProcessFile(e.dataTransfer.files[0]);
+    }
+  };
+
+  const handleManualReExtract = () => {
+    if (fileAttachment) {
+      triggerAutoExtraction(fileAttachment.dataUrl, fileAttachment.fileName, fileAttachment.fileType);
     }
   };
 
@@ -258,10 +345,16 @@ export const MailModal: React.FC<MailModalProps> = ({
               {isMasuk ? <Inbox className="w-5 h-5 text-white" /> : <Send className="w-5 h-5 text-white" />}
             </div>
             <div>
-              <h2 className="text-lg font-bold">
-                {isEditing ? 'Edit Agenda ' : 'Catat Agenda '}
-                {isMasuk ? 'Surat Masuk' : 'Surat Keluar'}
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-bold">
+                  {isEditing ? 'Edit Agenda ' : 'Catat Agenda '}
+                  {isMasuk ? 'Surat Masuk' : 'Surat Keluar'}
+                </h2>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/20 text-[10px] font-bold text-amber-200">
+                  <Sparkles className="w-3 h-3 text-amber-300" />
+                  <span>AI Auto-Detect</span>
+                </span>
+              </div>
               <p className="text-xs text-white/80">
                 Lengkapi formulir registrasi kearsipan surat resmi sekolah
               </p>
@@ -277,199 +370,63 @@ export const MailModal: React.FC<MailModalProps> = ({
 
         {/* Modal Body / Scrollable Form */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* Section 1: Nomor & Tanggal */}
-          <div className="space-y-4">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <FileCheck className="w-4 h-4 text-blue-600" />
-              <span>Informasi Pokok Surat</span>
-            </h3>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* Nomor Agenda */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Nomor Agenda <span className="text-slate-400 font-normal">(Otomatis/Bisa diubah)</span>
-                </label>
-                <input
-                  type="text"
-                  value={nomorAgenda}
-                  onChange={(e) => setNomorAgenda(e.target.value)}
-                  placeholder="Contoh: 001/SM/2026"
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
-                />
-              </div>
-
-              {/* Nomor Surat */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Nomor Surat Asli <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={nomorSurat}
-                  onChange={(e) => {
-                    setNomorSurat(e.target.value);
-                    if (formErrors.nomorSurat) setFormErrors((prev) => ({ ...prev, nomorSurat: '' }));
-                  }}
-                  placeholder="Contoh: 421.3/145/Disdik/2026"
-                  className={`w-full px-3.5 py-2 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    formErrors.nomorSurat ? 'border-rose-400 bg-rose-50' : 'bg-slate-50 border-slate-300 focus:bg-white'
-                  }`}
-                />
-                {formErrors.nomorSurat && (
-                  <p className="text-[11px] text-rose-600 mt-1">{formErrors.nomorSurat}</p>
-                )}
-              </div>
-
-              {/* Tanggal Surat */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Tanggal Surat <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="date"
-                  value={tanggalSurat}
-                  onChange={(e) => {
-                    setTanggalSurat(e.target.value);
-                    if (formErrors.tanggalSurat) setFormErrors((prev) => ({ ...prev, tanggalSurat: '' }));
-                  }}
-                  className={`w-full px-3.5 py-2 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    formErrors.tanggalSurat ? 'border-rose-400 bg-rose-50' : 'bg-slate-50 border-slate-300 focus:bg-white'
-                  }`}
-                />
-                {formErrors.tanggalSurat && (
-                  <p className="text-[11px] text-rose-600 mt-1">{formErrors.tanggalSurat}</p>
-                )}
-              </div>
-
-              {/* Tanggal Diterima (Masuk) / Tanggal Kirim (Keluar) */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {isMasuk ? 'Tanggal Diterima Sekolah' : 'Tanggal Pengiriman Surat'}
-                </label>
-                <input
-                  type="date"
-                  value={isMasuk ? tanggalDiterima : tanggalKirim}
-                  onChange={(e) => {
-                    if (isMasuk) setTanggalDiterima(e.target.value);
-                    else setTanggalKirim(e.target.value);
-                  }}
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
-                />
+          {/* AI Auto-Extraction Status Notification */}
+          {isExtracting && (
+            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 text-blue-900 flex items-center gap-3 text-xs animate-pulse shadow-xs">
+              <Loader2 className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+              <div className="flex-1">
+                <span className="font-bold block">Sedang Menganalisis Berkas Surat...</span>
+                <span className="text-blue-700 text-[11px]">
+                  Mendeteksi nomor surat, tanggal, pengirim, dan perihal secara otomatis.
+                </span>
               </div>
             </div>
-          </div>
+          )}
 
-          {/* Section 2: Pihak Terkait, Perihal, & Sifat */}
-          <div className="space-y-4 pt-3 border-t border-slate-100">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              {/* Pengirim atau Tujuan */}
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {isMasuk ? 'Asal / Pengirim Surat' : 'Tujuan / Penerima Surat'}{' '}
-                  <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={isMasuk ? pengirim : tujuan}
-                  onChange={(e) => {
-                    if (isMasuk) {
-                      setPengirim(e.target.value);
-                      if (formErrors.pengirim) setFormErrors((prev) => ({ ...prev, pengirim: '' }));
-                    } else {
-                      setTujuan(e.target.value);
-                      if (formErrors.tujuan) setFormErrors((prev) => ({ ...prev, tujuan: '' }));
-                    }
-                  }}
-                  placeholder={
-                    isMasuk
-                      ? 'Contoh: Dinas Pendidikan Provinsi / BKD / Komite Sekolah'
-                      : 'Contoh: Kepala Balai Guru Penggerak / Orang Tua Murid'
-                  }
-                  className={`w-full px-3.5 py-2 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    (isMasuk ? formErrors.pengirim : formErrors.tujuan)
-                      ? 'border-rose-400 bg-rose-50'
-                      : 'bg-slate-50 border-slate-300 focus:bg-white'
-                  }`}
-                />
-                {(isMasuk ? formErrors.pengirim : formErrors.tujuan) && (
-                  <p className="text-[11px] text-rose-600 mt-1">
-                    {isMasuk ? formErrors.pengirim : formErrors.tujuan}
-                  </p>
-                )}
+          {extractionNotice && !isExtracting && (
+            <div className="p-3.5 rounded-2xl bg-emerald-50/90 border border-emerald-200 text-emerald-900 flex items-center justify-between gap-3 text-xs shadow-xs animate-in fade-in">
+              <div className="flex items-center gap-2.5">
+                <div className="p-1.5 rounded-lg bg-emerald-100 text-emerald-700">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="font-bold text-emerald-950 block">
+                    {extractionNotice.source === 'ai' ? '🤖 Berhasil Dideteksi Otomatis oleh AI!' : '✨ Berhasil Dideteksi Otomatis dari Berkas!'}
+                  </span>
+                  <span className="text-emerald-700 text-[11px]">
+                    {extractionNotice.message}. Anda tetap dapat menyesuaikan kolom bila diperlukan.
+                  </span>
+                </div>
               </div>
-
-              {/* Sifat Surat */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Sifat Surat</label>
-                <select
-                  value={sifat}
-                  onChange={(e) => setSifat(e.target.value as MailCategory)}
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="Biasa">Biasa</option>
-                  <option value="Penting">Penting</option>
-                  <option value="Segera">Segera</option>
-                  <option value="Rahasia">Rahasia</option>
-                  <option value="Edaran">Edaran</option>
-                  <option value="Undangan">Undangan</option>
-                  <option value="Pemberitahuan">Pemberitahuan</option>
-                </select>
-              </div>
+              <button
+                type="button"
+                onClick={() => setExtractionNotice(null)}
+                className="text-emerald-600 hover:text-emerald-800 p-1 font-bold"
+              >
+                ✕
+              </button>
             </div>
+          )}
 
-            {/* Perihal */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Perihal / Pokok Isi Surat <span className="text-rose-500">*</span>
-              </label>
-              <textarea
-                rows={2}
-                value={perihal}
-                onChange={(e) => {
-                  setPerihal(e.target.value);
-                  if (formErrors.perihal) setFormErrors((prev) => ({ ...prev, perihal: '' }));
-                }}
-                placeholder="Tuliskan judul perihal surat secara lengkap dan jelas..."
-                className={`w-full px-3.5 py-2 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  formErrors.perihal ? 'border-rose-400 bg-rose-50' : 'bg-slate-50 border-slate-300 focus:bg-white'
-                }`}
-              />
-              {formErrors.perihal && (
-                <p className="text-[11px] text-rose-600 mt-1">{formErrors.perihal}</p>
-              )}
-            </div>
-
-            {/* Keterangan / Ringkasan */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Keterangan Tambahan / Ringkasan Arsip
-              </label>
-              <input
-                type="text"
-                value={keterangan}
-                onChange={(e) => setKeterangan(e.target.value)}
-                placeholder="Catatan berkas, nomor rak arsip, tindak lanjut, dll."
-                className="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
-              />
-            </div>
-          </div>
-
-          {/* Section 3: File Upload (PDF, JPG, PNG) Permanen di Database */}
-          <div className="space-y-3 pt-3 border-t border-slate-100">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+          {/* Section 1: File Upload (PDF, JPG, PNG) Permanen di Database */}
+          <div className="space-y-3 p-4 rounded-2xl bg-slate-50/80 border border-slate-200/80 backdrop-blur-md">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                 <Paperclip className="w-4 h-4 text-blue-600" />
                 <span>Upload Berkas Surat (PDF / JPG / PNG)</span>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 text-[10px] font-bold">
+                  <Wand2 className="w-3 h-3 text-blue-600" />
+                  Auto-Detect Kolom Aktif
+                </span>
               </label>
-              <span className="text-[11px] text-slate-400">Maks. 15MB | Tersimpan Permanen</span>
+              <span className="text-[11px] text-slate-500 font-medium">Maks. 15MB &bull; Tersimpan Permanen</span>
             </div>
 
             {/* File display if already attached */}
             {fileAttachment ? (
-              <div className="flex items-center justify-between p-3.5 bg-blue-50/80 border border-blue-200 rounded-xl">
+              <div className="flex items-center justify-between p-3.5 bg-white border border-blue-200/80 rounded-2xl shadow-xs">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-lg bg-white border border-blue-200 flex items-center justify-center shrink-0">
+                  <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center shrink-0">
                     {fileAttachment.fileType.includes('pdf') ? (
                       <FileText className="w-5 h-5 text-rose-500" />
                     ) : (
@@ -477,27 +434,38 @@ export const MailModal: React.FC<MailModalProps> = ({
                     )}
                   </div>
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-900 truncate">
+                    <p className="text-sm font-bold text-slate-900 truncate">
                       {fileAttachment.fileName}
                     </p>
                     <p className="text-xs text-slate-500">
-                      {(fileAttachment.fileSize / 1024).toFixed(1)} KB &bull; Siap tersimpan di database
+                      {(fileAttachment.fileSize / 1024).toFixed(1)} KB &bull; Tersimpan di Database
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleManualReExtract}
+                    disabled={isExtracting}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl border border-indigo-200 transition-colors cursor-pointer"
+                    title="Mendeteksi ulang nomor surat, tanggal, pengirim, dan perihal dari file ini"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Deteksi Ulang AI</span>
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100 rounded-lg transition-colors"
+                    className="px-2.5 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50 rounded-xl transition-colors cursor-pointer"
                   >
                     Ganti
                   </button>
                   <button
                     type="button"
                     onClick={() => setFileAttachment(undefined)}
-                    className="p-1.5 text-rose-600 hover:bg-rose-100 rounded-lg transition-colors"
+                    className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
                     title="Hapus File"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -517,15 +485,17 @@ export const MailModal: React.FC<MailModalProps> = ({
                 className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-all ${
                   isDragging
                     ? 'border-blue-500 bg-blue-50'
-                    : 'border-slate-300 hover:border-blue-400 hover:bg-slate-50/80'
+                    : 'border-slate-300 hover:border-blue-400 hover:bg-white'
                 }`}
               >
-                <Upload className="w-8 h-8 mx-auto text-blue-600 mb-2" />
-                <p className="text-sm font-semibold text-slate-800">
-                  Klik atau Tarik Berkas Surat ke Sini
+                <div className="inline-flex p-3 rounded-2xl bg-blue-50 text-blue-600 mb-2">
+                  <Upload className="w-6 h-6" />
+                </div>
+                <p className="text-sm font-bold text-slate-800">
+                  Unggah Berkas Surat & Deteksi Kolom Otomatis
                 </p>
-                <p className="text-xs text-slate-500 mt-1">
-                  Mendukung berkas scan <span className="font-medium text-slate-700">PDF, JPG, JPEG, PNG</span> (Maks. 15MB)
+                <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+                  Tarik atau pilih scan surat <span className="font-semibold text-slate-700">PDF, JPG, JPEG, PNG</span>. Sistem akan otomatis mengisi nomor surat, tanggal, asal pengirim, dan perihal!
                 </p>
               </div>
             )}
@@ -546,13 +516,211 @@ export const MailModal: React.FC<MailModalProps> = ({
             )}
           </div>
 
+          {/* Section 2: Informasi Pokok Surat */}
+          <div className="space-y-4">
+            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+              <FileCheck className="w-4 h-4 text-blue-600" />
+              <span>Informasi Pokok Surat</span>
+            </h3>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Nomor Agenda */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Nomor Agenda <span className="text-slate-400 font-normal">(Otomatis/Bisa diubah)</span>
+                </label>
+                <input
+                  type="text"
+                  value={nomorAgenda}
+                  onChange={(e) => setNomorAgenda(e.target.value)}
+                  placeholder="Contoh: 001/SM/2026"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+                />
+              </div>
+
+              {/* Nomor Surat Asli (Auto-detected) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center justify-between">
+                  <span>
+                    Nomor Surat Asli <span className="text-rose-500">*</span>
+                  </span>
+                  {nomorSurat && (
+                    <span className="text-[10px] font-semibold text-blue-600">✓ Terisi</span>
+                  )}
+                </label>
+                <input
+                  type="text"
+                  value={nomorSurat}
+                  onChange={(e) => {
+                    setNomorSurat(e.target.value);
+                    if (formErrors.nomorSurat) setFormErrors((prev) => ({ ...prev, nomorSurat: '' }));
+                  }}
+                  placeholder="Contoh: 421.3/145/Disdik/2026"
+                  className={`w-full px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    formErrors.nomorSurat ? 'border-rose-400 bg-rose-50' : 'bg-slate-50 border-slate-300 focus:bg-white'
+                  }`}
+                />
+                {formErrors.nomorSurat && (
+                  <p className="text-[11px] text-rose-600 mt-1">{formErrors.nomorSurat}</p>
+                )}
+              </div>
+
+              {/* Tanggal Surat (Auto-detected) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center justify-between">
+                  <span>
+                    Tanggal Surat <span className="text-rose-500">*</span>
+                  </span>
+                  {tanggalSurat && (
+                    <span className="text-[10px] font-semibold text-blue-600">✓ Terisi</span>
+                  )}
+                </label>
+                <input
+                  type="date"
+                  value={tanggalSurat}
+                  onChange={(e) => {
+                    setTanggalSurat(e.target.value);
+                    if (formErrors.tanggalSurat) setFormErrors((prev) => ({ ...prev, tanggalSurat: '' }));
+                  }}
+                  className={`w-full px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    formErrors.tanggalSurat ? 'border-rose-400 bg-rose-50' : 'bg-slate-50 border-slate-300 focus:bg-white'
+                  }`}
+                />
+                {formErrors.tanggalSurat && (
+                  <p className="text-[11px] text-rose-600 mt-1">{formErrors.tanggalSurat}</p>
+                )}
+              </div>
+
+              {/* Tanggal Diterima (Masuk) / Tanggal Kirim (Keluar) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  {isMasuk ? 'Tanggal Diterima Sekolah' : 'Tanggal Pengiriman Surat'}
+                </label>
+                <input
+                  type="date"
+                  value={isMasuk ? tanggalDiterima : tanggalKirim}
+                  onChange={(e) => {
+                    if (isMasuk) setTanggalDiterima(e.target.value);
+                    else setTanggalKirim(e.target.value);
+                  }}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Section 3: Pihak Terkait, Perihal, & Sifat */}
+          <div className="space-y-4 pt-3 border-t border-slate-100">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {/* Pengirim atau Tujuan (Auto-detected) */}
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center justify-between">
+                  <span>
+                    {isMasuk ? 'Asal / Pengirim Surat' : 'Tujuan / Penerima Surat'}{' '}
+                    <span className="text-rose-500">*</span>
+                  </span>
+                  {(isMasuk ? pengirim : tujuan) && (
+                    <span className="text-[10px] font-semibold text-blue-600">✓ Terisi</span>
+                  )}
+                </label>
+                <input
+                  type="text"
+                  value={isMasuk ? pengirim : tujuan}
+                  onChange={(e) => {
+                    if (isMasuk) {
+                      setPengirim(e.target.value);
+                      if (formErrors.pengirim) setFormErrors((prev) => ({ ...prev, pengirim: '' }));
+                    } else {
+                      setTujuan(e.target.value);
+                      if (formErrors.tujuan) setFormErrors((prev) => ({ ...prev, tujuan: '' }));
+                    }
+                  }}
+                  placeholder={
+                    isMasuk
+                      ? 'Contoh: Dinas Pendidikan Provinsi / BKD / Komite Sekolah'
+                      : 'Contoh: Kepala Balai Guru Penggerak / Orang Tua Murid'
+                  }
+                  className={`w-full px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    (isMasuk ? formErrors.pengirim : formErrors.tujuan)
+                      ? 'border-rose-400 bg-rose-50'
+                      : 'bg-slate-50 border-slate-300 focus:bg-white'
+                  }`}
+                />
+                {(isMasuk ? formErrors.pengirim : formErrors.tujuan) && (
+                  <p className="text-[11px] text-rose-600 mt-1">
+                    {isMasuk ? formErrors.pengirim : formErrors.tujuan}
+                  </p>
+                )}
+              </div>
+
+              {/* Sifat Surat */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Sifat Surat</label>
+                <select
+                  value={sifat}
+                  onChange={(e) => setSifat(e.target.value as MailCategory)}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="Biasa">Biasa</option>
+                  <option value="Penting">Penting</option>
+                  <option value="Segera">Segera</option>
+                  <option value="Rahasia">Rahasia</option>
+                  <option value="Edaran">Edaran</option>
+                  <option value="Undangan">Undangan</option>
+                  <option value="Pemberitahuan">Pemberitahuan</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Perihal (Auto-detected) */}
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center justify-between">
+                <span>
+                  Perihal / Pokok Isi Surat <span className="text-rose-500">*</span>
+                </span>
+                {perihal && (
+                  <span className="text-[10px] font-semibold text-blue-600">✓ Terisi</span>
+                )}
+              </label>
+              <textarea
+                rows={2}
+                value={perihal}
+                onChange={(e) => {
+                  setPerihal(e.target.value);
+                  if (formErrors.perihal) setFormErrors((prev) => ({ ...prev, perihal: '' }));
+                }}
+                placeholder="Tuliskan judul perihal surat secara lengkap dan jelas..."
+                className={`w-full px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                  formErrors.perihal ? 'border-rose-400 bg-rose-50' : 'bg-slate-50 border-slate-300 focus:bg-white'
+                }`}
+              />
+              {formErrors.perihal && (
+                <p className="text-[11px] text-rose-600 mt-1">{formErrors.perihal}</p>
+              )}
+            </div>
+
+            {/* Keterangan / Ringkasan */}
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                Keterangan Tambahan / Ringkasan Arsip
+              </label>
+              <input
+                type="text"
+                value={keterangan}
+                onChange={(e) => setKeterangan(e.target.value)}
+                placeholder="Catatan berkas, nomor rak arsip, tindak lanjut, dll."
+                className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+              />
+            </div>
+          </div>
+
           {/* Section 4: Lembar Disposisi (Khusus Surat Masuk) */}
           {isMasuk && (
             <div className="pt-3 border-t border-slate-100 space-y-3">
               <button
                 type="button"
                 onClick={() => setShowDisposisi(!showDisposisi)}
-                className="flex items-center justify-between w-full text-left p-3 rounded-xl bg-purple-50 hover:bg-purple-100/70 text-purple-900 border border-purple-200 transition-colors"
+                className="flex items-center justify-between w-full text-left p-3 rounded-2xl bg-purple-50/80 hover:bg-purple-100/70 text-purple-900 border border-purple-200 transition-colors"
               >
                 <div className="flex items-center gap-2">
                   <ClipboardList className="w-4 h-4 text-purple-600" />
@@ -566,7 +734,7 @@ export const MailModal: React.FC<MailModalProps> = ({
               </button>
 
               {showDisposisi && (
-                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 animate-in fade-in duration-100">
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3 animate-in fade-in duration-100">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1">
@@ -577,7 +745,7 @@ export const MailModal: React.FC<MailModalProps> = ({
                         value={tujuanDisposisi}
                         onChange={(e) => setTujuanDisposisi(e.target.value)}
                         placeholder="Contoh: Waka Kurikulum, Waka Sarpras, Bendahara"
-                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs"
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs"
                       />
                     </div>
                     <div>
@@ -587,7 +755,7 @@ export const MailModal: React.FC<MailModalProps> = ({
                       <select
                         value={sifatDisposisi}
                         onChange={(e) => setSifatDisposisi(e.target.value as any)}
-                        className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs"
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs"
                       >
                         <option value="Biasa">Biasa</option>
                         <option value="Segera">Segera</option>
@@ -605,7 +773,7 @@ export const MailModal: React.FC<MailModalProps> = ({
                       value={isiDisposisi}
                       onChange={(e) => setIsiDisposisi(e.target.value)}
                       placeholder="Contoh: Pelajari dan tindaklanjuti, buatkan surat balasan sebelum tanggal 15."
-                      className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs"
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs"
                     />
                   </div>
 
@@ -617,7 +785,7 @@ export const MailModal: React.FC<MailModalProps> = ({
                       type="date"
                       value={batasWaktu}
                       onChange={(e) => setBatasWaktu(e.target.value)}
-                      className="px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs"
+                      className="px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs"
                     />
                   </div>
                 </div>
@@ -627,24 +795,31 @@ export const MailModal: React.FC<MailModalProps> = ({
         </form>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-100 transition-colors"
-          >
-            Batal
-          </button>
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={isSubmitting}
-            className={`px-5 py-2 rounded-xl text-xs font-bold text-white shadow-md transition-all active:scale-95 disabled:opacity-50 cursor-pointer ${
-              isMasuk ? 'bg-blue-600 hover:bg-blue-700' : 'bg-emerald-600 hover:bg-emerald-700'
-            }`}
-          >
-            {isSubmitting ? 'Menyimpan...' : isEditing ? 'Simpan Perubahan' : 'Catat Surat ke Database'}
-          </button>
+        <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-1.5 text-slate-500 text-[11px]">
+            <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+            <span>Unggah berkas untuk mengisi otomatis kolom pokok</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-100 transition-colors"
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={isSubmitting || isExtracting}
+              className={`px-5 py-2.5 rounded-xl text-xs font-bold text-white shadow-md transition-all active:scale-95 disabled:opacity-50 cursor-pointer ${
+                isMasuk ? 'bg-blue-600 hover:bg-blue-700' : 'bg-emerald-600 hover:bg-emerald-700'
+              }`}
+            >
+              {isSubmitting ? 'Menyimpan...' : isEditing ? 'Simpan Perubahan' : 'Catat Surat ke Database'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
