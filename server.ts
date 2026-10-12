@@ -57,17 +57,22 @@ app.post('/api/extract-letter-data', async (req, res) => {
 
     // Call Gemini 3.8 Flash to extract letter fields
     const promptText = `
-Anda adalah asisten cerdas kearsipan tata usaha persuratan dinas dan sekolah di Indonesia.
-Analisis dokumen surat resmi ini dan temukan informasi berikut:
-1. nomorSurat: Nomor surat resmi yang tertera (contoh: "421.3/145/Disdik/2026" atau "045/SE/2026").
-2. tanggalSurat: Tanggal diterbitkannya surat dalam format standar YYYY-MM-DD. Jika tertera format Indonesia seperti "14 Oktober 2026", konversi menjadi "2026-10-14".
-3. pengirim: Nama lengkap instansi, dinas, lembaga, organisasi, atau pihak pengirim surat (biasanya tertera di Kop Surat atau bagian penandatangan).
-4. perihal: Perihal atau pokok inti surat resmi secara jelas dan ringkas.
-5. sifat: Klasifikasikan sifat surat ke salah satu dari: "Biasa", "Penting", "Segera", "Rahasia", "Edaran", "Undangan", atau "Pemberitahuan".
-6. keterangan: Ringkasan singkat 1 kalimat perihal arahan atau tindak lanjut surat.
+Anda adalah asisten cerdas kearsipan tata usaha persuratan dinas dan satuan pendidikan sekolah di Indonesia.
+Analisis DOKUMEN SURAT terlampir dan ekstrak informasi kearsipan resmi:
 
-Nama file dokumen: ${fileName || 'surat_masuk.pdf'}.
-Jika salah satu nilai tidak ditemukan secara eksplisit, berikan estimasi terbaik berdasarkan isi surat.
+ATURAN UTAMA UNTUK KOLOM PERIHAL / POKOK ISI SURAT:
+- "perihal": WAJIB berisi perihal resmi surat atau pokok/tujuan utama isi surat yang sesungguhnya.
+- Bacalah baris "Perihal:", "Hal:", atau baca kalimat pembuka dan isi paragraf surat untuk mengetahui apa topik surat tersebut (contoh yang benar: "Undangan Sosialisasi Kurikulum Pembelajaran", "Pemberitahuan Pelaksanaan Asesmen Nasional", "Permohonan Bantuan Sarana Prasarana", "Edaran Hari Libur dan Pembagian Rapor", "Laporan Pertanggungjawaban Dana BOS").
+- DILARANG KERAS mengisi kolom "perihal" dengan nama file (seperti "scan.pdf", "surat.jpg", "IMG_...", "WhatsApp Image...", dll).
+- Jika pada dokumen tidak tertulis kata "Perihal:" secara tersurat, simpulkan dari inti tujuan surat tersebut (maksimal 10-15 kata).
+
+INFORMASI YANG DIEKSTRAK:
+1. nomorSurat: Nomor surat resmi dinas yang tertera pada surat (contoh: "421.3/145/Disdik/2026", "800/092/SMAN1/2026").
+2. tanggalSurat: Tanggal surat diterbitkan dalam format baku YYYY-MM-DD.
+3. pengirim: Nama lengkap instansi, dinas, kementerian, organisasi, atau pejabat penandatangan pengirim surat.
+4. perihal: Pokok masalah / hal / isi inti dari surat tersebut (BUKAN nama file dokumen).
+5. sifat: Klasifikasikan sifat surat ke salah satu dari: "Biasa", "Penting", "Segera", "Rahasia", "Edaran", "Undangan", atau "Pemberitahuan".
+6. keterangan: Ringkasan singkat 1-2 kalimat mengenai pokok surat atau arahan tindak lanjut.
 `;
 
     const response = await aiClient.models.generateContent({
@@ -129,6 +134,15 @@ Jika salah satu nilai tidak ditemukan secara eksplisit, berikan estimasi terbaik
     }
 
     const parsed = JSON.parse(outputText.trim());
+
+    // Sanitize perihal: ensure it is not a filename
+    if (parsed.perihal) {
+      parsed.perihal = parsed.perihal.replace(/\.(pdf|jpe?g|png|docx?|xlsx?)$/i, '').trim();
+      if (/^(img[_-]?\d+|whatsapp[_-]?image|screenshot|scan[_-]?\d*|doc[_-]?\d*|file[_-]?\d*|image[_-]?\d*)$/i.test(parsed.perihal)) {
+        parsed.perihal = 'Pemberitahuan / Informasi Kedinasan Sekolah';
+      }
+    }
+
     return res.json({
       success: true,
       data: parsed,
