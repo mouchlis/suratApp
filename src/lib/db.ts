@@ -7,95 +7,151 @@ const STORE_MAILS = 'mails';
 const STORE_SETTINGS = 'settings';
 
 let dbInstance: IDBDatabase | null = null;
+let useLocalStorageFallback = false;
+
+// LocalStorage Keys for fallback
+const LS_MAILS = 'agenda_fallback_mails';
+const LS_PROFILE = 'agenda_fallback_profile';
+
+function isIndexedDBSupported(): boolean {
+  try {
+    return typeof window !== 'undefined' && 'indexedDB' in window && window.indexedDB !== null;
+  } catch {
+    return false;
+  }
+}
 
 export async function openDatabase(): Promise<IDBDatabase> {
   if (dbInstance) return dbInstance;
+  if (!isIndexedDBSupported()) {
+    useLocalStorageFallback = true;
+    throw new Error('IndexedDB tidak didukung pada peramban ini');
+  }
 
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    try {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-    request.onupgradeneeded = (event) => {
-      const db = (event.target as IDBOpenDBRequest).result;
-      
-      // Store mails
-      if (!db.objectStoreNames.contains(STORE_MAILS)) {
-        const mailStore = db.createObjectStore(STORE_MAILS, { keyPath: 'id' });
-        mailStore.createIndex('type', 'type', { unique: false });
-        mailStore.createIndex('nomorAgenda', 'nomorAgenda', { unique: false });
-        mailStore.createIndex('tanggalSurat', 'tanggalSurat', { unique: false });
-        mailStore.createIndex('sifat', 'sifat', { unique: false });
-        mailStore.createIndex('createdAt', 'createdAt', { unique: false });
-      }
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        
+        // Store mails
+        if (!db.objectStoreNames.contains(STORE_MAILS)) {
+          const mailStore = db.createObjectStore(STORE_MAILS, { keyPath: 'id' });
+          mailStore.createIndex('type', 'type', { unique: false });
+          mailStore.createIndex('nomorAgenda', 'nomorAgenda', { unique: false });
+          mailStore.createIndex('tanggalSurat', 'tanggalSurat', { unique: false });
+          mailStore.createIndex('sifat', 'sifat', { unique: false });
+          mailStore.createIndex('createdAt', 'createdAt', { unique: false });
+        }
 
-      // Store settings (e.g. school profile)
-      if (!db.objectStoreNames.contains(STORE_SETTINGS)) {
-        db.createObjectStore(STORE_SETTINGS, { keyPath: 'key' });
-      }
-    };
+        // Store settings (e.g. school profile)
+        if (!db.objectStoreNames.contains(STORE_SETTINGS)) {
+          db.createObjectStore(STORE_SETTINGS, { keyPath: 'key' });
+        }
+      };
 
-    request.onsuccess = (event) => {
-      dbInstance = (event.target as IDBOpenDBRequest).result;
-      resolve(dbInstance);
-    };
+      request.onsuccess = (event) => {
+        dbInstance = (event.target as IDBOpenDBRequest).result;
+        resolve(dbInstance);
+      };
 
-    request.onerror = (event) => {
-      console.error('Failed to open IndexedDB:', (event.target as IDBOpenDBRequest).error);
-      reject((event.target as IDBOpenDBRequest).error);
-    };
+      request.onerror = (event) => {
+        console.warn('IndexedDB gagal dibuka, beralih ke fallback localStorage:', (event.target as IDBOpenDBRequest).error);
+        useLocalStorageFallback = true;
+        reject((event.target as IDBOpenDBRequest).error);
+      };
+    } catch (err) {
+      useLocalStorageFallback = true;
+      reject(err);
+    }
   });
 }
 
 // Initialise and Seed DB if empty
 export async function initDatabase(): Promise<void> {
-  const db = await openDatabase();
+  try {
+    const db = await openDatabase();
 
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([STORE_MAILS, STORE_SETTINGS], 'readwrite');
-    const mailStore = transaction.objectStore(STORE_MAILS);
-    const countRequest = mailStore.count();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_MAILS, STORE_SETTINGS], 'readwrite');
+      const mailStore = transaction.objectStore(STORE_MAILS);
+      const countRequest = mailStore.count();
 
-    countRequest.onsuccess = () => {
-      if (countRequest.result === 0) {
-        // Seed default mail records
-        INITIAL_MAIL_ITEMS.forEach((item) => {
-          mailStore.put(item);
-        });
+      countRequest.onsuccess = () => {
+        if (countRequest.result === 0) {
+          // Seed default mail records
+          INITIAL_MAIL_ITEMS.forEach((item) => {
+            mailStore.put(item);
+          });
 
-        // Seed school profile
-        const settingsStore = transaction.objectStore(STORE_SETTINGS);
-        settingsStore.put({ key: 'school_profile', value: DEFAULT_SCHOOL_PROFILE });
-      }
-    };
+          // Seed school profile
+          const settingsStore = transaction.objectStore(STORE_SETTINGS);
+          settingsStore.put({ key: 'school_profile', value: DEFAULT_SCHOOL_PROFILE });
+        }
+      };
 
-    transaction.oncomplete = () => {
-      resolve();
-    };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = (e) => {
+        console.warn('Gagal seed ke IndexedDB, beralih ke fallback:', e);
+        useLocalStorageFallback = true;
+        seedFallbackLocalStorage();
+        resolve();
+      };
+    });
+  } catch (err) {
+    console.warn('Menggunakan fallback penyimpanan lokal:', err);
+    useLocalStorageFallback = true;
+    seedFallbackLocalStorage();
+  }
+}
 
-    transaction.onerror = (e) => {
-      console.error('Error seeding IndexedDB:', e);
-      reject(e);
-    };
-  });
+function seedFallbackLocalStorage() {
+  try {
+    if (!localStorage.getItem(LS_MAILS)) {
+      localStorage.setItem(LS_MAILS, JSON.stringify(INITIAL_MAIL_ITEMS));
+    }
+    if (!localStorage.getItem(LS_PROFILE)) {
+      localStorage.setItem(LS_PROFILE, JSON.stringify(DEFAULT_SCHOOL_PROFILE));
+    }
+  } catch (e) {
+    console.error('LocalStorage quota or access error:', e);
+  }
 }
 
 // Get all mails
 export async function getAllMails(): Promise<MailItem[]> {
-  const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_MAILS, 'readonly');
-    const store = transaction.objectStore(STORE_MAILS);
-    const request = store.getAll();
+  if (useLocalStorageFallback) {
+    try {
+      const raw = localStorage.getItem(LS_MAILS);
+      const items: MailItem[] = raw ? JSON.parse(raw) : INITIAL_MAIL_ITEMS;
+      return items.sort((a, b) => new Date(b.tanggalSurat).getTime() - new Date(a.tanggalSurat).getTime());
+    } catch {
+      return [...INITIAL_MAIL_ITEMS];
+    }
+  }
 
-    request.onsuccess = () => {
-      // Sort newest created or newest date first
-      const items = (request.result as MailItem[]).sort((a, b) => {
-        return new Date(b.tanggalSurat).getTime() - new Date(a.tanggalSurat).getTime();
-      });
-      resolve(items);
-    };
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_MAILS, 'readonly');
+      const store = transaction.objectStore(STORE_MAILS);
+      const request = store.getAll();
 
-    request.onerror = () => reject(request.error);
-  });
+      request.onsuccess = () => {
+        const items = (request.result as MailItem[]).sort((a, b) => {
+          return new Date(b.tanggalSurat).getTime() - new Date(a.tanggalSurat).getTime();
+        });
+        resolve(items);
+      };
+
+      request.onerror = () => reject(request.error);
+    });
+  } catch {
+    const raw = localStorage.getItem(LS_MAILS);
+    const items: MailItem[] = raw ? JSON.parse(raw) : INITIAL_MAIL_ITEMS;
+    return items;
+  }
 }
 
 // Get mail by type
@@ -106,49 +162,75 @@ export async function getMailsByType(type: MailType): Promise<MailItem[]> {
 
 // Get single mail
 export async function getMailById(id: string): Promise<MailItem | undefined> {
-  const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_MAILS, 'readonly');
-    const store = transaction.objectStore(STORE_MAILS);
-    const request = store.get(id);
-
-    request.onsuccess = () => resolve(request.result as MailItem | undefined);
-    request.onerror = () => reject(request.error);
-  });
+  const all = await getAllMails();
+  return all.find((item) => item.id === id);
 }
 
 // Save or Update mail
 export async function saveMail(mail: MailItem): Promise<MailItem> {
-  const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_MAILS, 'readwrite');
-    const store = transaction.objectStore(STORE_MAILS);
+  const now = new Date().toISOString();
+  const itemToSave: MailItem = {
+    ...mail,
+    updatedAt: now,
+    createdAt: mail.createdAt || now,
+  };
 
-    const now = new Date().toISOString();
-    const itemToSave: MailItem = {
-      ...mail,
-      updatedAt: now,
-      createdAt: mail.createdAt || now,
-    };
+  if (useLocalStorageFallback) {
+    const all = await getAllMails();
+    const index = all.findIndex((m) => m.id === itemToSave.id);
+    if (index >= 0) {
+      all[index] = itemToSave;
+    } else {
+      all.push(itemToSave);
+    }
+    localStorage.setItem(LS_MAILS, JSON.stringify(all));
+    return itemToSave;
+  }
 
-    const request = store.put(itemToSave);
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_MAILS, 'readwrite');
+      const store = transaction.objectStore(STORE_MAILS);
+      const request = store.put(itemToSave);
 
-    request.onsuccess = () => resolve(itemToSave);
-    request.onerror = () => reject(request.error);
-  });
+      request.onsuccess = () => resolve(itemToSave);
+      request.onerror = () => reject(request.error);
+    });
+  } catch {
+    const all = await getAllMails();
+    const index = all.findIndex((m) => m.id === itemToSave.id);
+    if (index >= 0) all[index] = itemToSave;
+    else all.push(itemToSave);
+    localStorage.setItem(LS_MAILS, JSON.stringify(all));
+    return itemToSave;
+  }
 }
 
 // Delete mail
 export async function deleteMail(id: string): Promise<void> {
-  const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_MAILS, 'readwrite');
-    const store = transaction.objectStore(STORE_MAILS);
-    const request = store.delete(id);
+  if (useLocalStorageFallback) {
+    const all = await getAllMails();
+    const filtered = all.filter((m) => m.id !== id);
+    localStorage.setItem(LS_MAILS, JSON.stringify(filtered));
+    return;
+  }
 
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_MAILS, 'readwrite');
+      const store = transaction.objectStore(STORE_MAILS);
+      const request = store.delete(id);
+
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } catch {
+    const all = await getAllMails();
+    const filtered = all.filter((m) => m.id !== id);
+    localStorage.setItem(LS_MAILS, JSON.stringify(filtered));
+  }
 }
 
 // Get next auto-increment agenda number for current year
@@ -157,7 +239,6 @@ export async function getNextAgendaNumber(type: MailType, year?: string): Promis
   const mails = await getMailsByType(type);
   const suffix = type === 'masuk' ? 'SM' : 'SK';
 
-  // Find highest index for this year
   let maxNum = 0;
   mails.forEach((m) => {
     if (m.nomorAgenda && m.nomorAgenda.includes(`/${suffix}/${targetYear}`)) {
@@ -176,54 +257,87 @@ export async function getNextAgendaNumber(type: MailType, year?: string): Promis
 
 // School Profile
 export async function getSchoolProfile(): Promise<SchoolProfile> {
-  const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_SETTINGS, 'readonly');
-    const store = transaction.objectStore(STORE_SETTINGS);
-    const request = store.get('school_profile');
+  if (useLocalStorageFallback) {
+    try {
+      const raw = localStorage.getItem(LS_PROFILE);
+      return raw ? JSON.parse(raw) : DEFAULT_SCHOOL_PROFILE;
+    } catch {
+      return DEFAULT_SCHOOL_PROFILE;
+    }
+  }
 
-    request.onsuccess = () => {
-      if (request.result && request.result.value) {
-        resolve(request.result.value as SchoolProfile);
-      } else {
-        resolve(DEFAULT_SCHOOL_PROFILE);
-      }
-    };
-    request.onerror = () => reject(request.error);
-  });
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_SETTINGS, 'readonly');
+      const store = transaction.objectStore(STORE_SETTINGS);
+      const request = store.get('school_profile');
+
+      request.onsuccess = () => {
+        if (request.result && request.result.value) {
+          resolve(request.result.value as SchoolProfile);
+        } else {
+          resolve(DEFAULT_SCHOOL_PROFILE);
+        }
+      };
+      request.onerror = () => resolve(DEFAULT_SCHOOL_PROFILE);
+    });
+  } catch {
+    return DEFAULT_SCHOOL_PROFILE;
+  }
 }
 
 export async function saveSchoolProfile(profile: SchoolProfile): Promise<void> {
-  const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_SETTINGS, 'readwrite');
-    const store = transaction.objectStore(STORE_SETTINGS);
-    const request = store.put({ key: 'school_profile', value: profile });
+  if (useLocalStorageFallback) {
+    localStorage.setItem(LS_PROFILE, JSON.stringify(profile));
+    return;
+  }
 
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_SETTINGS, 'readwrite');
+      const store = transaction.objectStore(STORE_SETTINGS);
+      const request = store.put({ key: 'school_profile', value: profile });
+
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } catch {
+    localStorage.setItem(LS_PROFILE, JSON.stringify(profile));
+  }
 }
 
 // Reset database to initial sample data
 export async function resetDatabase(): Promise<void> {
-  const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([STORE_MAILS, STORE_SETTINGS], 'readwrite');
-    const mailStore = transaction.objectStore(STORE_MAILS);
-    const settingsStore = transaction.objectStore(STORE_SETTINGS);
+  if (useLocalStorageFallback) {
+    localStorage.setItem(LS_MAILS, JSON.stringify(INITIAL_MAIL_ITEMS));
+    localStorage.setItem(LS_PROFILE, JSON.stringify(DEFAULT_SCHOOL_PROFILE));
+    return;
+  }
 
-    mailStore.clear();
-    settingsStore.clear();
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_MAILS, STORE_SETTINGS], 'readwrite');
+      const mailStore = transaction.objectStore(STORE_MAILS);
+      const settingsStore = transaction.objectStore(STORE_SETTINGS);
 
-    INITIAL_MAIL_ITEMS.forEach((item) => {
-      mailStore.put(item);
+      mailStore.clear();
+      settingsStore.clear();
+
+      INITIAL_MAIL_ITEMS.forEach((item) => {
+        mailStore.put(item);
+      });
+      settingsStore.put({ key: 'school_profile', value: DEFAULT_SCHOOL_PROFILE });
+
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
     });
-    settingsStore.put({ key: 'school_profile', value: DEFAULT_SCHOOL_PROFILE });
-
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-  });
+  } catch {
+    localStorage.setItem(LS_MAILS, JSON.stringify(INITIAL_MAIL_ITEMS));
+    localStorage.setItem(LS_PROFILE, JSON.stringify(DEFAULT_SCHOOL_PROFILE));
+  }
 }
 
 // Full backup exporter / importer
@@ -248,25 +362,40 @@ export async function importDatabaseBackup(jsonString: string): Promise<{ count:
     throw new Error('Format file backup tidak valid. Dokumen harus memuat data mails.');
   }
 
-  const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([STORE_MAILS, STORE_SETTINGS], 'readwrite');
-    const mailStore = transaction.objectStore(STORE_MAILS);
-    const settingsStore = transaction.objectStore(STORE_SETTINGS);
-
-    // If profile exists in backup, restore it
+  if (useLocalStorageFallback) {
     if (parsed.schoolProfile) {
-      settingsStore.put({ key: 'school_profile', value: parsed.schoolProfile });
+      localStorage.setItem(LS_PROFILE, JSON.stringify(parsed.schoolProfile));
     }
+    localStorage.setItem(LS_MAILS, JSON.stringify(parsed.mails));
+    return { count: parsed.mails.length };
+  }
 
-    parsed.mails.forEach((m: MailItem) => {
-      mailStore.put(m);
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_MAILS, STORE_SETTINGS], 'readwrite');
+      const mailStore = transaction.objectStore(STORE_MAILS);
+      const settingsStore = transaction.objectStore(STORE_SETTINGS);
+
+      if (parsed.schoolProfile) {
+        settingsStore.put({ key: 'school_profile', value: parsed.schoolProfile });
+      }
+
+      parsed.mails.forEach((m: MailItem) => {
+        mailStore.put(m);
+      });
+
+      transaction.oncomplete = () => {
+        resolve({ count: parsed.mails.length });
+      };
+
+      transaction.onerror = () => reject(transaction.error);
     });
-
-    transaction.oncomplete = () => {
-      resolve({ count: parsed.mails.length });
-    };
-
-    transaction.onerror = () => reject(transaction.error);
-  });
+  } catch {
+    if (parsed.schoolProfile) {
+      localStorage.setItem(LS_PROFILE, JSON.stringify(parsed.schoolProfile));
+    }
+    localStorage.setItem(LS_MAILS, JSON.stringify(parsed.mails));
+    return { count: parsed.mails.length };
+  }
 }
