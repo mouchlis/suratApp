@@ -74,7 +74,7 @@ export const MailModal: React.FC<MailModalProps> = ({
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionNotice, setExtractionNotice] = useState<{
     message: string;
-    source: 'ai' | 'fallback';
+    source: 'ai' | 'fallback' | 'ocr';
     fields: string[];
   } | null>(null);
 
@@ -391,7 +391,11 @@ export const MailModal: React.FC<MailModalProps> = ({
                 </div>
                 <div>
                   <span className="font-bold text-emerald-950 block">
-                    {extractionNotice.source === 'ai' ? '🤖 Berhasil Dideteksi Otomatis oleh AI!' : '✨ Berhasil Dideteksi Otomatis dari Berkas!'}
+                    {extractionNotice.source === 'ai'
+                      ? '🤖 Berhasil Dideteksi Otomatis oleh AI!'
+                      : extractionNotice.source === 'ocr'
+                      ? '🔍 Berhasil Dideteksi via OCR Dokumen!'
+                      : '✨ Berhasil Dideteksi Otomatis dari Berkas!'}
                   </span>
                   <span className="text-emerald-700 text-[11px]">
                     {extractionNotice.message}. Anda tetap dapat menyesuaikan kolom bila diperlukan.

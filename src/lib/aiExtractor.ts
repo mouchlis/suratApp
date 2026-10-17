@@ -1,4 +1,5 @@
 import { MailCategory } from '../types';
+import { createWorker } from 'tesseract.js';
 
 export interface ExtractedLetterData {
   nomorSurat: string;
@@ -7,7 +8,7 @@ export interface ExtractedLetterData {
   perihal: string;
   sifat?: MailCategory;
   keterangan?: string;
-  source: 'ai' | 'fallback';
+  source: 'ai' | 'fallback' | 'ocr';
 }
 
 /**
@@ -15,7 +16,7 @@ export interface ExtractedLetterData {
  * Ensure perihal represents the actual topic/content of the letter,
  * and NEVER contains file names, extensions, or camera upload prefixes.
  */
-function cleanPerihalSubject(raw: string, defaultTopic: string = 'Penyampaian Informasi dan Koordinasi Kedinasan Sekolah'): string {
+export function cleanPerihalSubject(raw: string, defaultTopic: string = 'Penyampaian Informasi dan Koordinasi Kedinasan Sekolah'): string {
   if (!raw || typeof raw !== 'string') return defaultTopic;
 
   let cleaned = raw.trim();
@@ -44,6 +45,289 @@ function cleanPerihalSubject(raw: string, defaultTopic: string = 'Penyampaian In
 }
 
 /**
+ * Resize high-resolution image uploads on canvas to optimize transfer speed,
+ * memory consumption, and OCR efficiency.
+ */
+export async function resizeImageForOcr(dataUrl: string, maxDimension = 1800): Promise<string> {
+  if (typeof window === 'undefined' || !dataUrl.startsWith('data:image/')) {
+    return dataUrl;
+  }
+
+  // SVGs don't need pixel downscaling
+  if (dataUrl.includes('image/svg+xml')) {
+    return dataUrl;
+  }
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let width = img.width;
+      let height = img.height;
+
+      if (width <= maxDimension && height <= maxDimension) {
+        return resolve(dataUrl);
+      }
+
+      if (width > height) {
+        height = Math.round((height * maxDimension) / width);
+        width = maxDimension;
+      } else {
+        width = Math.round((width * maxDimension) / height);
+        height = maxDimension;
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return resolve(dataUrl);
+
+      // White background for transparent PNG scans
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+
+      resolve(canvas.toDataURL('image/jpeg', 0.88));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+/**
+ * Client-side OCR using Tesseract.js (runs offline in the browser without server dependency).
+ */
+export async function performClientOcr(imageSource: string): Promise<string> {
+  try {
+    const worker = await createWorker('eng');
+    const ret = await worker.recognize(imageSource);
+    await worker.terminate();
+    return ret.data.text || '';
+  } catch (err) {
+    console.warn('[OCR] Client-side OCR error:', err);
+    return '';
+  }
+}
+
+/**
+ * Detect the exact official letter number (Nomor Surat Asli) from document text.
+ * Strictly respects Indonesian official document layout (Tata Naskah Dinas):
+ * The letter number is positioned BELOW THE KOP SURAT (letterhead) on the LEFT side of the document.
+ * It ignores street address numbers, telephone/fax lines, postal codes, and bank accounts inside the kop surat.
+ */
+export function detectNomorSurat(rawText: string): string {
+  if (!rawText) return '';
+
+  const cleanNomor = (candidate: string): string => {
+    if (!candidate) return '';
+    // Strip trailing date or metadata if printed on same line
+    candidate = candidate
+      .split(/\s{2,}|\t|[\r\n<]|Sifat|Lampiran|Perihal|Hal|Tanggal|Kepada|Yth|\s+(?=\d{1,2}\s+(?:Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember))/i)[0]
+      .trim();
+    // Strip label prefix if still present
+    candidate = candidate.replace(/^(?:Nomor(?:\s*Surat)?|No\.?(?:\s*Surat)?|NOMOR|NO)\s*[:=\-\t\s]*/i, '');
+    // Normalize spaces around slashes, dots, and hyphens (e.g. "421.3 / 145 / Disdik" -> "421.3/145/Disdik")
+    candidate = candidate.replace(/\s*([\/\.-])\s*/g, '$1').replace(/^["'\s:]+|["'\s]+$/g, '').trim();
+
+    // Rejection filters:
+    if (/^https?:/i.test(candidate)) return '';
+    if (/telp|fax|faks|telepon|handphone|wa|email|website/i.test(candidate)) return '';
+    if (/^(?:08|\+62)/.test(candidate)) return ''; // Phone number
+    if (/^\d{1,4}$/.test(candidate)) return ''; // Pure street number like "45" or "12"
+
+    // Valid Indonesian letter number must contain at least one digit and either:
+    // a) slashes or hyphens separating codes (e.g., "400.3.5/277/416-101/2026", "421.3/145/Disdik/2026", "SE/045/2026")
+    // b) official classification code with dots and slashes
+    if (/\d/.test(candidate) && (/[\/\.]/.test(candidate) || candidate.includes('-')) && candidate.length >= 5) {
+      return candidate;
+    }
+    return '';
+  };
+
+  // Split into lines to inspect layout context
+  const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+  // Strategy 1: Find lines with explicit "Nomor" / "No." label, strictly excluding address & phone lines
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Skip address lines from the kop surat (e.g., "Jalan Pemuda No. 12 ...", "Kode Pos 61361")
+    if (/^(?:Jl|Jalan|Jln|Alamat|Telp|Telepon|Fax|Faks|Email|E-mail|Website|Web|Laman|Kode\s*Pos)\b/i.test(line)) continue;
+    // Skip telephone, fax, HP, rekening, NPSN labels
+    if (/\b(?:No\.?\s*(?:Telp|Fax|HP|Telepon|Handphone|Rek|Rekening|NPSN|NSS|NPWP|Gedung|Rumah|RT|RW|Urut|Peserta))\b/i.test(line)) continue;
+    if (/(?:Telp|Fax|Faks|Telepon)\s*[:\/\(]/i.test(line)) continue;
+
+    // Check for "Nomor :" or "No. :" or "NOMOR :"
+    const match = line.match(/(?:^|\b)(?:Nomor\s*Surat|No\.?\s*Surat|Nomor|NOMOR|No\.)\s*[:=\t\s]+\s*([A-Za-z0-9][A-Za-z0-9\s\.\-\/\(\)]{3,80})/i);
+    if (match && match[1]) {
+      const cleaned = cleanNomor(match[1]);
+      if (cleaned) {
+        return cleaned;
+      }
+    }
+  }
+
+  // Strategy 2: Look for letter number patterns (code/number/instansi/year) anywhere below kop
+  // e.g. 400.3.5/277/416-101/2026, 421.3/145/Disdik/2026, 800/512/BKD-PROV/2026
+  const patternRegex = /\b([A-Za-z0-9]{2,10}[\/\.\-][A-Za-z0-9\.\-]+[\/\.\-][A-Za-z0-9\.\-\/]{2,35})\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = patternRegex.exec(rawText)) !== null) {
+    const candidate = cleanNomor(match[1]);
+    if (candidate && !candidate.includes('image/') && !candidate.includes('application/')) {
+      return candidate;
+    }
+  }
+
+  // Strategy 3: Surat Edaran / Surat Keputusan / Surat Tugas pattern (e.g. SE/045/Disdik/2026, 005/123-Und/2026)
+  const specialMatch = rawText.match(/\b((?:SE|SP|SK|ST|B|KPTS)[\/\-]\d+[\/\-][A-Za-z0-9\.\-\/]{3,30})\b/i);
+  if (specialMatch && specialMatch[1]) {
+    const cleaned = cleanNomor(specialMatch[1]);
+    if (cleaned) return cleaned;
+  }
+
+  return '';
+}
+
+/**
+ * Detect Perihal / Pokok Isi Surat from text.
+ */
+export function detectPerihal(rawText: string): string {
+  if (!rawText) return '';
+  const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+  // Strategy 1: Explicit line: "Hal : Undangan Pembinaan Kurikulum SD tahun 2026" or "Perihal :"
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const match = line.match(/(?:^|\b)(?:Perihal|Hal|Pokok\s*Isi|Tentang)\s*[:=\t\s]+\s*([^<\r\n]{5,150})/i);
+    if (match && match[1]) {
+      let candidate = match[1].trim();
+      candidate = candidate.split(/Kepada|Yth\b|Tanggal|Lampiran|Sifat/i)[0].trim();
+      candidate = candidate.replace(/^["'\s:]+|["'\s]+$/g, '').trim();
+      if (candidate.length >= 5) {
+        return cleanPerihalSubject(candidate);
+      }
+    }
+  }
+
+  // Strategy 2: Official decree/circular title: "SURAT EDARAN", "SURAT KEPUTUSAN", "UNDANGAN"
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/(?:SURAT\s*EDARAN|SURAT\s*KEPUTUSAN|SURAT\s*TUGAS|PEMBERITAHUAN|UNDANGAN)/i.test(line) && line.length < 80) {
+      for (let j = i + 1; j < Math.min(lines.length, i + 5); j++) {
+        if (/^TENTANG\b/i.test(lines[j])) {
+          const topicLine = lines[j].replace(/^TENTANG\s*[:=\s]*/i, '').trim() || lines[j + 1];
+          if (topicLine) return cleanPerihalSubject(`${line} tentang ${topicLine}`);
+        }
+      }
+      return cleanPerihalSubject(line);
+    }
+  }
+
+  return '';
+}
+
+/**
+ * Detect date of the letter (Tanggal Surat) in Indonesian correspondence.
+ */
+export function detectTanggalSurat(rawText: string): string {
+  if (!rawText) return new Date().toISOString().slice(0, 10);
+
+  const idMonths: Record<string, string> = {
+    januari: '01', februari: '02', maret: '03', april: '04', mei: '05', juni: '06',
+    juli: '07', agustus: '08', september: '09', oktober: '10', november: '11', desember: '12',
+  };
+
+  // Indonesian format with city or date: "Mojokerto, 7 Oktober 2026" or "15 Januari 2026"
+  const fullDateMatch = rawText.match(/\b(\d{1,2})\s+(Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember)\s+(\d{4})\b/i);
+  if (fullDateMatch) {
+    const day = fullDateMatch[1].padStart(2, '0');
+    const month = idMonths[fullDateMatch[2].toLowerCase()];
+    const year = fullDateMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  // Numeric date format: DD/MM/YYYY or YYYY-MM-DD
+  const numDateMatch = rawText.match(/\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})\b/);
+  if (numDateMatch) {
+    const day = numDateMatch[1].padStart(2, '0');
+    const month = numDateMatch[2].padStart(2, '0');
+    const year = numDateMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Detect sender instansi from kop surat or signature.
+ */
+export function detectPengirim(rawText: string): string {
+  if (!rawText) return 'Dinas Pendidikan / Instansi Terkait';
+  const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+  // Strategy 1: Top Kop Surat Header lines
+  for (let i = 0; i < Math.min(lines.length, 6); i++) {
+    const line = lines[i];
+    if (/^(?:Jl|Jalan|Telp|Fax|Email|Website|Kode|Laman|http)/i.test(line)) continue;
+    if (/\b(?:DINAS|KEMENTERIAN|BADAN|SEKOLAH|KOMITE|YAYASAN|CABANG\s*DINAS)\b/i.test(line)) {
+      let instansi = line;
+      if (i > 0 && /PEMERINTAH\s+(?:KABUPATEN|KOTA|PROVINSI)\s+([A-Z\s]+)/i.test(lines[i - 1])) {
+        const daerah = lines[i - 1].match(/PEMERINTAH\s+((?:KABUPATEN|KOTA|PROVINSI)\s+[A-Za-z\s]+)/i);
+        if (daerah) {
+          instansi = `${line} ${daerah[1]}`;
+        }
+      }
+      return instansi.trim();
+    }
+  }
+
+  // Strategy 2: Signature block
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (/^(?:Kepala\s+Dinas|Kepala\s+Sekolah|Ketua\s+Komite|Kepala\s+SMA|Kepala\s+SMK|Kepala\s+SMP|Kepala\s+SD)\b/i.test(line) && line.length < 70) {
+      return line.trim();
+    }
+  }
+
+  return 'Dinas Pendidikan / Instansi Terkait';
+}
+
+/**
+ * Detect mail classification/urgency (Sifat Surat).
+ */
+export function detectSifat(rawText: string): MailCategory {
+  if (/Sifat\s*[:=\t\s]*segera/i.test(rawText) || /\bSegera\b/i.test(rawText)) return 'Segera';
+  if (/Sifat\s*[:=\t\s]*penting/i.test(rawText) || /\bPenting\b/i.test(rawText)) return 'Penting';
+  if (/Sifat\s*[:=\t\s]*rahasia/i.test(rawText) || /\bRahasia\b/i.test(rawText)) return 'Rahasia';
+  if (/\bUndangan\b/i.test(rawText)) return 'Undangan';
+  if (/\bEdaran\b/i.test(rawText)) return 'Edaran';
+  if (/\bPemberitahuan\b/i.test(rawText)) return 'Pemberitahuan';
+  return 'Biasa';
+}
+
+/**
+ * Reconstruct letter number from filename when user saves or scans letter with dashes or underscores
+ * (e.g. "400.3.5-277-416-101-2026.pdf").
+ */
+function detectNomorFromFilename(fileName: string): string {
+  if (!fileName) return '';
+  const baseName = fileName.replace(/\.[a-zA-Z0-9]+$/, '').trim();
+
+  const match = baseName.match(/(?:(?:surat|scan|dokumen|sm|sk)[_\-\s]*)?([A-Za-z0-9]{2,8}[_\-\.][A-Za-z0-9\.\-]+[_\-\.][A-Za-z0-9\.\-_]{2,35})/i);
+  if (match && match[1]) {
+    const candidate = match[1];
+    if (/\d/.test(candidate) && !/^(img|whatsapp|screenshot|scan\d+$)/i.test(candidate)) {
+      const parts = candidate.split(/[_\-]+/);
+      if (parts.length >= 3) {
+        return parts.join('/');
+      }
+      return candidate;
+    }
+  }
+  return '';
+}
+
+/**
  * Extracts raw readable text streams from uploaded document
  * (supports SVG and plain-text encoded PDF byte streams).
  */
@@ -54,7 +338,6 @@ function extractReadableTextFromDocument(fileDataUrl: string): string {
   if (fileDataUrl.includes('data:image/svg+xml')) {
     try {
       const decoded = decodeURIComponent(fileDataUrl.split(',')[1] || '');
-      // Strip XML/SVG tags to get pure readable text
       const stripped = decoded.replace(/<[^>]+>/g, ' ');
       return decoded + '\n' + stripped;
     } catch {
@@ -111,188 +394,33 @@ function extractReadableTextFromDocument(fileDataUrl: string): string {
 }
 
 /**
- * Detect the exact official letter number (Nomor Surat Asli) from document text.
- * Strictly respects Indonesian official document layout (Tata Naskah Dinas):
- * The letter number is positioned BELOW THE KOP SURAT (letterhead) on the LEFT side of the document.
- * It ignores street address numbers, telephone/fax lines, postal codes, and bank accounts inside the kop surat.
+ * Fallback extraction: processes document text (or OCR result) with regex parsers.
  */
-export function detectNomorSurat(rawText: string): string {
-  if (!rawText) return '';
-
-  const cleanNomor = (candidate: string): string => {
-    if (!candidate) return '';
-    // Strip trailing date or metadata if printed on same line
-    candidate = candidate
-      .split(/\s{2,}|\t|[\r\n<]|Sifat|Lampiran|Perihal|Hal|Tanggal|Kepada|Yth|\s+(?=\d{1,2}\s+(?:Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember))/i)[0]
-      .trim();
-    // Strip label prefix if still present
-    candidate = candidate.replace(/^(?:Nomor(?:\s*Surat)?|No\.?(?:\s*Surat)?|NOMOR|NO)\s*[:=\-\t\s]*/i, '');
-    // Normalize spaces around slashes, dots, and hyphens (e.g. "421.3 / 145 / Disdik" -> "421.3/145/Disdik")
-    candidate = candidate.replace(/\s*([\/\.-])\s*/g, '$1').replace(/^["'\s:]+|["'\s]+$/g, '').trim();
-
-    // Rejection filters:
-    if (/^https?:/i.test(candidate)) return '';
-    if (/telp|fax|faks|telepon|handphone|wa|email|website/i.test(candidate)) return '';
-    if (/^(?:08|\+62)/.test(candidate)) return ''; // Phone number
-    if (/^\d{1,4}$/.test(candidate)) return ''; // Pure street number like "45" or "12"
-
-    // Valid Indonesian letter number must contain at least one digit and either:
-    // a) slashes or hyphens separating codes (e.g., "421.3/145/Disdik/2026", "SE/045/2026")
-    // b) official classification code with dots and slashes
-    if (/\d/.test(candidate) && (/[\/\.]/.test(candidate) || candidate.includes('-')) && candidate.length >= 5) {
-      return candidate;
-    }
-    return '';
-  };
-
-  // Split into lines to inspect layout context
-  const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-
-  // Strategy 1: Find lines with explicit "Nomor" / "No." label, strictly excluding address & phone lines
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // Skip address lines from the kop surat (e.g., "Jalan Pemuda No. 12 ...", "Kode Pos 16910")
-    if (/^(?:Jl|Jalan|Jln|Alamat|Telp|Telepon|Fax|Faks|Email|E-mail|Website|Web|Laman|Kode\s*Pos)\b/i.test(line)) continue;
-    // Skip telephone, fax, HP, rekening, NPSN labels
-    if (/\b(?:No\.?\s*(?:Telp|Fax|HP|Telepon|Handphone|Rek|Rekening|NPSN|NSS|NPWP|Gedung|Rumah|RT|RW|Urut|Peserta))\b/i.test(line)) continue;
-    if (/(?:Telp|Fax|Faks|Telepon)\s*[:\/\(]/i.test(line)) continue;
-
-    // Check for "Nomor :" or "No. :" or "NOMOR :"
-    const match = line.match(/(?:^|\b)(?:Nomor\s*Surat|No\.?\s*Surat|Nomor|NOMOR|No\.)\s*[:=\t\s]+\s*([A-Za-z0-9][A-Za-z0-9\s\.\-\/\(\)]{3,80})/i);
-    if (match && match[1]) {
-      const cleaned = cleanNomor(match[1]);
-      if (cleaned) {
-        return cleaned;
-      }
-    }
-  }
-
-  // Strategy 2: Look for letter number patterns (code/number/instansi/year) anywhere below kop
-  // e.g. 421.3/145/Disdik/2026, 800/512/BKD-PROV/2026, 014/KOMITE-SMAN1/IX/2026, SE/045/Disdik/2026
-  const patternRegex = /\b([A-Za-z0-9]{2,10}[\/\.\-][A-Za-z0-9\.\-]+[\/\.\-][A-Za-z0-9\.\-\/]{2,35})\b/g;
-  let match: RegExpExecArray | null;
-  while ((match = patternRegex.exec(rawText)) !== null) {
-    const candidate = cleanNomor(match[1]);
-    if (candidate && !candidate.includes('image/') && !candidate.includes('application/')) {
-      return candidate;
-    }
-  }
-
-  // Strategy 3: Surat Edaran / Surat Keputusan / Surat Tugas pattern (e.g. SE/045/Disdik/2026, 005/123-Und/2026)
-  const specialMatch = rawText.match(/\b((?:SE|SP|SK|ST|B|KPTS)[\/\-]\d+[\/\-][A-Za-z0-9\.\-\/]{3,30})\b/i);
-  if (specialMatch && specialMatch[1]) {
-    const cleaned = cleanNomor(specialMatch[1]);
-    if (cleaned) return cleaned;
-  }
-
-  return '';
-}
-
-/**
- * Reconstruct letter number from filename when user saves or scans letter with dashes or underscores
- * (since slashes are illegal in filesystem names: e.g. "421.3-145-Disdik-2026.pdf").
- */
-function detectNomorFromFilename(fileName: string): string {
-  if (!fileName) return '';
-  const baseName = fileName.replace(/\.[a-zA-Z0-9]+$/, '').trim();
-
-  // If filename contains a letter number formatted with dashes or underscores:
-  // e.g. "421.3-145-Disdik-2026" or "421.1_108_Disdik_I_2026" or "SE_045_Disdikpora_2026"
-  const match = baseName.match(/(?:(?:surat|scan|dokumen|sm|sk)[_\-\s]*)?([A-Za-z0-9]{2,8}[_\-\.][A-Za-z0-9\.\-]+[_\-\.][A-Za-z0-9\.\-_]{2,35})/i);
-  if (match && match[1]) {
-    let candidate = match[1];
-    if (/\d/.test(candidate) && !/^(img|whatsapp|screenshot|scan\d+$)/i.test(candidate)) {
-      const parts = candidate.split(/[_\-]+/);
-      if (parts.length >= 3) {
-        return parts.join('/');
-      }
-      return candidate;
-    }
-  }
-  return '';
-}
-
-/**
- * Intelligent client-side fallback for static environments (like GitHub Pages)
- * or when the backend server is unreachable.
- * Reads REAL document text and contextual clues without inventing fake numbers.
- */
-function extractFallbackFromData(
+export function extractFallbackFromData(
   fileDataUrl: string,
-  fileName: string
+  fileName: string,
+  preloadedText: string = ''
 ): ExtractedLetterData {
-  const today = new Date().toISOString().slice(0, 10);
-  let nomorSurat = '';
-  let tanggalSurat = today;
-  let pengirim = '';
-  let perihal = '';
-  let sifat: MailCategory = 'Biasa';
-  let keterangan = '';
+  const docText = preloadedText || extractReadableTextFromDocument(fileDataUrl);
 
-  const docText = extractReadableTextFromDocument(fileDataUrl);
+  let nomorSurat = detectNomorSurat(docText);
+  let tanggalSurat = detectTanggalSurat(docText);
+  let pengirim = detectPengirim(docText);
+  let perihal = detectPerihal(docText);
+  let sifat: MailCategory = detectSifat(docText);
 
-  // 1. Extract REAL Nomor Surat from document text
-  if (docText) {
-    nomorSurat = detectNomorSurat(docText);
-
-    // Extract Tanggal Surat from document text
-    const tglMatch = docText.match(/Tanggal\s*[:\s]+([^<\n\r]+)/i);
-    if (tglMatch) {
-      const rawTgl = tglMatch[1].trim();
-      const idMonths: Record<string, string> = {
-        januari: '01', februari: '02', maret: '03', april: '04', mei: '05', juni: '06',
-        juli: '07', agustus: '08', september: '09', oktober: '10', november: '11', desember: '12',
-      };
-      const parts = rawTgl.split(/[\s-]+/);
-      if (parts.length === 3) {
-        const day = parts[0].padStart(2, '0');
-        const monthKey = parts[1].toLowerCase();
-        const year = parts[2];
-        if (idMonths[monthKey]) {
-          tanggalSurat = `${year}-${idMonths[monthKey]}-${day}`;
-        }
-      }
-    }
-
-    // Extract Pengirim / Kop Surat Instansi
-    const kopMatch = docText.match(/<text[^>]*font-weight="bold"[^>]*>([A-Z\s]{6,})<\/text>/i);
-    if (kopMatch && !kopMatch[1].includes('LOGO')) {
-      pengirim = kopMatch[1].trim();
-    }
-
-    // Extract Perihal from text line: "Perihal : <subject>" or "Hal : <subject>"
-    const perihalMatch = docText.match(/(?:Perihal|Hal|Pokok\s*Isi|Tentang)\s*[:=\s]+([^<\n\r]{5,140})/i);
-    if (perihalMatch && perihalMatch[1].trim()) {
-      let candidate = perihalMatch[1].trim().replace(/<\/?[^>]+(>|$)/g, '');
-      candidate = candidate.split(/Kepada|Tanggal|Lampiran|Sifat/i)[0].trim();
-      if (candidate.length >= 5) {
-        perihal = candidate;
-      }
-    }
-
-    // Check for highlighted subject in quotation marks in SVG
-    if (!perihal) {
-      const quotedMatch = docText.match(/"([^"]{10,120})"/);
-      if (quotedMatch) perihal = quotedMatch[1].trim();
-    }
-
-    // Determine Sifat from document content
-    if (/Penting/i.test(docText)) sifat = 'Penting';
-    else if (/Segera/i.test(docText)) sifat = 'Segera';
-    else if (/Edaran/i.test(docText)) sifat = 'Edaran';
-    else if (/Undangan/i.test(docText)) sifat = 'Undangan';
-  }
-
-  // 2. If Nomor Surat was not in document text, inspect filename
+  // If nomor surat was not found in text, try filename
   if (!nomorSurat) {
     nomorSurat = detectNomorFromFilename(fileName);
   }
 
-  // 3. Fallback for Perihal based on context keywords (NEVER output raw filename!)
-  const lowerFileName = fileName.toLowerCase();
+  // Fallback for Perihal based on filename keywords if still not found
   if (!perihal) {
-    if (lowerFileName.includes('asesmen') || lowerFileName.includes('abm') || lowerFileName.includes('anbk')) {
+    const lowerFileName = fileName.toLowerCase();
+    if (lowerFileName.includes('kurikulum') || lowerFileName.includes('pembinaan')) {
+      perihal = 'Undangan Pembinaan Kurikulum Satuan Pendidikan';
+      sifat = 'Undangan';
+    } else if (lowerFileName.includes('asesmen') || lowerFileName.includes('abm') || lowerFileName.includes('anbk')) {
       perihal = 'Undangan Sosialisasi Asesmen Nasional & Asesmen Bakat Minat Siswa';
       sifat = 'Penting';
     } else if (lowerFileName.includes('bosp') || lowerFileName.includes('bos') || lowerFileName.includes('arkas')) {
@@ -301,50 +429,16 @@ function extractFallbackFromData(
     } else if (lowerFileName.includes('pangkat') || lowerFileName.includes('bkd') || lowerFileName.includes('skp')) {
       perihal = 'Verifikasi Berkas Kenaikan Pangkat Pendidik dan Tenaga Kependidikan';
       sifat = 'Segera';
-    } else if (lowerFileName.includes('komite') || lowerFileName.includes('musholla') || lowerFileName.includes('sarpras')) {
-      perihal = 'Permohonan Rapat Koordinasi Program Pengembangan Sarana dan Prasarana Sekolah';
-      sifat = 'Biasa';
-    } else if (lowerFileName.includes('pts') || lowerFileName.includes('pas') || lowerFileName.includes('ujian')) {
-      perihal = 'Pemberitahuan Pelaksanaan Penilaian Akhir Semester (PAS) Siswa';
-      sifat = 'Pemberitahuan';
-    } else if (lowerFileName.includes('uks') || lowerFileName.includes('puskesmas') || lowerFileName.includes('kesehatan')) {
-      perihal = 'Permohonan Pemeriksaan Kesehatan Berkala & Skrining Remaja Siswa Baru';
-      sifat = 'Biasa';
-    } else if (lowerFileName.includes('kinerja') || lowerFileName.includes('laporan')) {
-      perihal = 'Penyampaian Laporan Kinerja Bulanan Guru dan Tenaga Kependidikan';
-      sifat = 'Pemberitahuan';
     } else if (lowerFileName.includes('undangan') || lowerFileName.includes('rapat')) {
       perihal = 'Undangan Rapat Koordinasi dan Pembinaan Pendidik Satuan Pendidikan';
       sifat = 'Undangan';
-    } else if (lowerFileName.includes('edaran') || lowerFileName.includes('juknis')) {
-      perihal = 'Surat Edaran Penyelenggaraan Pembelajaran dan Kurikulum Sekolah';
-      sifat = 'Edaran';
-    } else if (lowerFileName.includes('libur') || lowerFileName.includes('kalender')) {
-      perihal = 'Pemberitahuan Penetapan Hari Libur dan Kalender Pendidikan Sekolah';
-      sifat = 'Edaran';
     } else {
       perihal = 'Penyampaian Informasi dan Koordinasi Administrasi Pendidikan Sekolah';
     }
   }
 
-  // 4. Fallback for Pengirim if empty
-  if (!pengirim) {
-    if (/dinas|disdik|provinsi|kabupaten|balai/i.test(lowerFileName)) {
-      pengirim = 'Dinas Pendidikan Provinsi Wilayah Terkait';
-    } else if (/komite/i.test(lowerFileName)) {
-      pengirim = 'Pengurus Komite Sekolah';
-    } else if (/bkd|kepegawaian/i.test(lowerFileName)) {
-      pengirim = 'Badan Kepegawaian Daerah';
-    } else if (/kemen|kementerian/i.test(lowerFileName)) {
-      pengirim = 'Kementerian Pendidikan Dasar dan Menengah';
-    } else {
-      pengirim = 'Dinas Pendidikan / Instansi Terkait';
-    }
-  }
-
-  // Clean and sanitize
   perihal = cleanPerihalSubject(perihal);
-  keterangan = `Perihal: "${perihal}".`;
+  const keterangan = `Perihal: "${perihal}".`;
 
   return {
     nomorSurat,
@@ -353,19 +447,30 @@ function extractFallbackFromData(
     perihal,
     sifat,
     keterangan,
-    source: 'fallback',
+    source: preloadedText ? 'ocr' : 'fallback',
   };
 }
 
 /**
  * Main extractor: First attempts server-side Gemini AI API with multi-model fallback.
- * If server is unavailable (e.g. static GitHub Pages), seamlessly uses local text stream extraction.
+ * If server is unavailable (e.g. static GitHub Pages), seamlessly uses local OCR or text stream extraction.
  */
 export async function extractLetterDataFromDoc(
   fileDataUrl: string,
   fileName: string,
   fileType: string
 ): Promise<ExtractedLetterData> {
+  // Optimize large images to prevent timeout
+  let processedDataUrl = fileDataUrl;
+  if (fileDataUrl.startsWith('data:image/') && !fileDataUrl.includes('image/svg+xml')) {
+    try {
+      processedDataUrl = await resizeImageForOcr(fileDataUrl, 1800);
+    } catch {
+      processedDataUrl = fileDataUrl;
+    }
+  }
+
+  // 1. Attempt Server-Side Gemini API
   try {
     const response = await fetch('/api/extract-letter-data', {
       method: 'POST',
@@ -373,7 +478,7 @@ export async function extractLetterDataFromDoc(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        fileData: fileDataUrl,
+        fileData: processedDataUrl,
         fileType,
         fileName,
       }),
@@ -382,21 +487,24 @@ export async function extractLetterDataFromDoc(
     if (response.ok) {
       const result = await response.json();
       if (result.success && result.data) {
-        // Sanitize the AI returned perihal to ensure no file name leaks
         const rawPerihal = result.data.perihal || '';
         const cleanedPerihal = cleanPerihalSubject(rawPerihal, 'Penyampaian Informasi dan Koordinasi Kedinasan Sekolah');
 
-        // Sanitize the AI returned nomorSurat (trim spaces/quotes and label prefixes)
         let cleanedNomor = (result.data.nomorSurat || '')
           .replace(/^(nomor\s*surat|nomor|no\.?\s*surat|no\.?)\s*[:=\-\s]*/i, '')
           .replace(/\s*([\/\.-])\s*/g, '$1')
-          .replace(/^["'\s]+|["'\s]+$/g, '')
+          .replace(/^["'\s:]+|["'\s]+$/g, '')
           .trim();
+
+        // If nomor surat from AI looks like street number ("45") or phone, clear it
+        if (/telp|fax|faks|telepon|http/i.test(cleanedNomor) || /^\d{1,4}$/.test(cleanedNomor)) {
+          cleanedNomor = '';
+        }
 
         return {
           nomorSurat: cleanedNomor,
           tanggalSurat: result.data.tanggalSurat || new Date().toISOString().slice(0, 10),
-          pengirim: result.data.pengirim || '',
+          pengirim: result.data.pengirim || 'Dinas Pendidikan / Instansi Terkait',
           perihal: cleanedPerihal,
           sifat: (result.data.sifat as MailCategory) || 'Biasa',
           keterangan: result.data.keterangan || `Perihal: ${cleanedPerihal}`,
@@ -405,9 +513,23 @@ export async function extractLetterDataFromDoc(
       }
     }
   } catch (err) {
-    console.warn('API server Gemini tidak terjangkau (mungkin di GitHub Pages statis), menggunakan deteksi teks lokal:', err);
+    console.warn('[AI Extractor] Server API tidak terjangkau (misal di GitHub Pages statis), beralih ke OCR/ekstraksi lokal:', err);
   }
 
-  // Graceful fallback with direct text stream inspection
-  return extractFallbackFromData(fileDataUrl, fileName);
+  // 2. Client-side OCR for Images when deployed to static hosts (GitHub Pages) or server offline
+  if (processedDataUrl.startsWith('data:image/') && !processedDataUrl.includes('image/svg+xml')) {
+    try {
+      console.log('[OCR] Memulai analisis teks OCR di browser...');
+      const ocrText = await performClientOcr(processedDataUrl);
+      if (ocrText && ocrText.trim().length > 15) {
+        console.log('[OCR] Hasil OCR teks berhasil diekstrak:', ocrText.slice(0, 150));
+        return extractFallbackFromData(processedDataUrl, fileName, ocrText);
+      }
+    } catch (ocrErr) {
+      console.warn('[OCR] Client OCR gagal:', ocrErr);
+    }
+  }
+
+  // 3. Graceful stream fallback for PDF and SVG
+  return extractFallbackFromData(processedDataUrl, fileName);
 }

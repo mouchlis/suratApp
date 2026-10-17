@@ -195,14 +195,15 @@ INFORMASI LAINNYA:
 
     // Cascade through available models for high availability
     const candidateModels = [
-      'gemini-3.5-flash',
       'gemini-3.8-flash',
       'gemini-flash-latest',
       'gemini-3.1-flash-lite',
+      'gemini-3.5-flash',
     ];
 
     let outputText = '';
     let lastError: any = null;
+    let successfulModel = '';
 
     for (const modelName of candidateModels) {
       try {
@@ -222,11 +223,12 @@ INFORMASI LAINNYA:
 
         if (response.text) {
           outputText = response.text;
+          successfulModel = modelName;
           break;
         }
       } catch (err: any) {
         lastError = err;
-        console.warn(`Model ${modelName} gagal (${err.status || err.message}), mencoba model alternatif...`);
+        console.warn(`[AI Extractor] Model ${modelName} gagal (${err.status || err.message}), mencoba alternatif...`);
       }
     }
 
@@ -234,7 +236,18 @@ INFORMASI LAINNYA:
       throw lastError || new Error('Tidak ada respons dari model AI.');
     }
 
-    const parsed = JSON.parse(outputText.trim());
+    // Safely extract and parse JSON even if surrounded by markdown code blocks
+    let cleanJson = outputText.trim();
+    if (cleanJson.startsWith('```')) {
+      cleanJson = cleanJson.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    }
+    const firstBrace = cleanJson.indexOf('{');
+    const lastBrace = cleanJson.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
+    }
+
+    const parsed = JSON.parse(cleanJson);
 
     // Sanitize Nomor Surat:
     // Strip any label prefixes: "Nomor :", "No. :", "Nomor Surat :", etc.
@@ -268,6 +281,13 @@ INFORMASI LAINNYA:
       }
       parsed.perihal = cleanedPerihal;
     }
+
+    console.log(`[AI Extractor] Berhasil mengekstrak surat via ${successfulModel}:`, {
+      nomorSurat: parsed.nomorSurat,
+      perihal: parsed.perihal,
+      pengirim: parsed.pengirim,
+      tanggalSurat: parsed.tanggalSurat,
+    });
 
     return res.json({
       success: true,
