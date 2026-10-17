@@ -85,12 +85,23 @@ app.post('/api/extract-letter-data', async (req, res) => {
 Anda adalah asisten AI kearsipan tata usaha persuratan dinas dan satuan pendidikan sekolah di Indonesia.
 Analisis DOKUMEN SURAT terlampir secara teliti dan ekstrak informasi kearsipan resmi:
 
-PANDUAN MENDETEKSI NOMOR SURAT ASLI (SANGAT KRUSIAL):
+PANDUAN MENDETEKSI NOMOR SURAT ASLI (SANGAT KRUSIAL - PERHATIKAN POSISI TATA LETAK):
 1. "nomorSurat": Wajib mendeteksi dan menyalin NOMOR SURAT ASLI yang tercantum pada dokumen surat tersebut.
-   - Carilah pada bagian kepala surat (kop surat) atau di bawah judul surat pada baris:
-     "Nomor :", "No. :", "No :", "NOMOR :", "Nomor Surat :", atau "No. Surat :".
+   - POSISI TATA LETAK UTAMA: Posisi nomor surat dinas resmi di Indonesia hampir selalu terletak DI BAWAH KOP SURAT (Kepala Surat / Garis Batas Kop) pada BAGIAN SEBELAH KIRI DOKUMEN.
+   - Di bawah kop surat sebelah kiri biasanya terdapat satu blok informasi:
+       Nomor    : [NOMOR SURAT ASLI DI SINI]
+       Sifat    : ...
+       Lampiran : ...
+       Hal / Perihal : ...
+     (Sementara tanggal surat biasanya berada di sebelah kanan atas sejajar atau di bagian tanda tangan bawah).
+   - JANGAN PERNAH MENGAMBIL NOMOR DI DALAM KOP SURAT!
+     Di dalam kop surat sering ada nomor alamat gedung/jalan (contoh "No. 12", "No. 45"), nomor telepon/fax (contoh "Telp/Fax: ..."), kode pos, NPSN, atau nomor rekening. ITU BUKAN NOMOR SURAT!
+   - Untuk jenis dokumen Surat Edaran / Surat Keputusan (SK) / Instruksi, posisinya persis di bawah judul surat di tengah, contoh:
+       SURAT KEPUTUSAN
+       NOMOR : [NOMOR SURAT ASLI DI SINI]
+       TENTANG ...
    - Ambil HANYA NOMOR SURAT SAJA!
-   - HAPUS kata awalan seperti "Nomor :", "No. :", "No :", "NOMOR :", "Nomor Surat :", "No. Surat :".
+   - HAPUS kata awalan label seperti "Nomor :", "No. :", "No :", "NOMOR :", "Nomor Surat :", "No. Surat :".
    - Format nomor surat resmi di Indonesia berupa kode klasifikasi/nomor urut/nama instansi/bulan/tahun.
      Contoh hasil yang benar:
      * "421.3/145/Disdik/2026"
@@ -101,7 +112,7 @@ PANDUAN MENDETEKSI NOMOR SURAT ASLI (SANGAT KRUSIAL):
      * "421.1/108/Disdik/I/2026"
      * "421.3/1892-Cadisdik.Wil.IV/2026"
    - Hilangkan spasi berlebih di antara tanda garis miring atau tanda hubung (contoh "421.3 / 145 / Disdik / 2026" harus menjadi "421.3/145/Disdik/2026").
-   - DILARANG KERAS mengisi kolom nomor surat dengan nomor agenda (misal 001/SM/...), nomor telepon, NPSN, nomor rekening, atau tanggal!
+   - DILARANG KERAS mengisi kolom nomor surat dengan nomor jalan/gedung, nomor agenda disposisi (misal 001/SM/...), nomor telepon, NPSN, nomor rekening, atau tanggal!
    - DILARANG mengarang nomor surat.
 
 PANDUAN MENDETEKSI PERIHAL / POKOK ISI SURAT:
@@ -229,10 +240,16 @@ INFORMASI LAINNYA:
     // Strip any label prefixes: "Nomor :", "No. :", "Nomor Surat :", etc.
     if (parsed.nomorSurat) {
       let cleanedNomor = parsed.nomorSurat
+        .split(/\s{2,}|\t|[\r\n<]|Sifat|Lampiran|Perihal|Hal|Tanggal|Kepada|Yth|\s+(?=\d{1,2}\s+(?:Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember))/i)[0]
         .replace(/^(nomor\s*surat|nomor|no\.?\s*surat|no\.?)\s*[:=\-\s]*/i, '')
         .replace(/\s*([\/\.-])\s*/g, '$1')
-        .replace(/^["'\s]+|["'\s]+$/g, '')
+        .replace(/^["'\s:]+|["'\s]+$/g, '')
         .trim();
+
+      // If it picked up an address street number ("45") or phone/fax or URL, discard
+      if (/telp|fax|faks|telepon|http/i.test(cleanedNomor) || /^\d{1,4}$/.test(cleanedNomor)) {
+        cleanedNomor = '';
+      }
       parsed.nomorSurat = cleanedNomor;
     }
 

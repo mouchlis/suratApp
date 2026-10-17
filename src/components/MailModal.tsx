@@ -563,7 +563,7 @@ export const MailModal: React.FC<MailModalProps> = ({
                   }`}
                 />
                 <p className="text-[11px] text-slate-500 mt-1">
-                  Nomor resmi yang tercetak pada dokumen fisik surat yang diunggah.
+                  Nomor resmi yang tercetak pada dokumen surat (terletak di bawah kop surat sebelah kiri).
                 </p>
                 {formErrors.nomorSurat && (
                   <p className="text-[11px] text-rose-600 mt-0.5">{formErrors.nomorSurat}</p>

@@ -112,44 +112,78 @@ function extractReadableTextFromDocument(fileDataUrl: string): string {
 
 /**
  * Detect the exact official letter number (Nomor Surat Asli) from document text.
- * Strips any label prefixes (Nomor:, No.:, etc.) and cleans up spaces around slashes.
+ * Strictly respects Indonesian official document layout (Tata Naskah Dinas):
+ * The letter number is positioned BELOW THE KOP SURAT (letterhead) on the LEFT side of the document.
+ * It ignores street address numbers, telephone/fax lines, postal codes, and bank accounts inside the kop surat.
  */
 export function detectNomorSurat(rawText: string): string {
   if (!rawText) return '';
 
-  // 1. Explicit labels: "Nomor Surat :", "No. Surat :", "Nomor :", "No :", "NOMOR :", "NO :"
-  const labelRegex = /(?:Nomor\s*Surat|No\.?\s*Surat|Nomor|No\.?|NOMOR|NO)\s*[:=\t\s]+\s*([A-Za-z0-9][A-Za-z0-9\s\.\-\/\(\)]{3,80})/i;
-  const match = rawText.match(labelRegex);
-  if (match && match[1]) {
-    let candidate = match[1];
-    // Stop at any newline, HTML tag, or subsequent letter metadata labels
-    candidate = candidate.split(/[\r\n<]|Sifat|Lampiran|Perihal|Hal|Tanggal|Kepada/i)[0].trim();
+  const cleanNomor = (candidate: string): string => {
+    if (!candidate) return '';
+    // Strip trailing date or metadata if printed on same line
+    candidate = candidate
+      .split(/\s{2,}|\t|[\r\n<]|Sifat|Lampiran|Perihal|Hal|Tanggal|Kepada|Yth|\s+(?=\d{1,2}\s+(?:Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember))/i)[0]
+      .trim();
+    // Strip label prefix if still present
+    candidate = candidate.replace(/^(?:Nomor(?:\s*Surat)?|No\.?(?:\s*Surat)?|NOMOR|NO)\s*[:=\-\t\s]*/i, '');
     // Normalize spaces around slashes, dots, and hyphens (e.g. "421.3 / 145 / Disdik" -> "421.3/145/Disdik")
-    candidate = candidate.replace(/\s*([\/\.-])\s*/g, '$1').replace(/^["'\s]+|["'\s]+$/g, '').trim();
+    candidate = candidate.replace(/\s*([\/\.-])\s*/g, '$1').replace(/^["'\s:]+|["'\s]+$/g, '').trim();
 
-    // Verify candidate has digits and either slashes, dots, or dashes, and is not a phone number or date
-    if (/\d/.test(candidate) && (/[\/\.]/.test(candidate) || candidate.includes('-') || candidate.length >= 5)) {
-      if (!candidate.startsWith('http') && !candidate.startsWith('08') && !candidate.startsWith('+62')) {
-        return candidate;
+    // Rejection filters:
+    if (/^https?:/i.test(candidate)) return '';
+    if (/telp|fax|faks|telepon|handphone|wa|email|website/i.test(candidate)) return '';
+    if (/^(?:08|\+62)/.test(candidate)) return ''; // Phone number
+    if (/^\d{1,4}$/.test(candidate)) return ''; // Pure street number like "45" or "12"
+
+    // Valid Indonesian letter number must contain at least one digit and either:
+    // a) slashes or hyphens separating codes (e.g., "421.3/145/Disdik/2026", "SE/045/2026")
+    // b) official classification code with dots and slashes
+    if (/\d/.test(candidate) && (/[\/\.]/.test(candidate) || candidate.includes('-')) && candidate.length >= 5) {
+      return candidate;
+    }
+    return '';
+  };
+
+  // Split into lines to inspect layout context
+  const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+  // Strategy 1: Find lines with explicit "Nomor" / "No." label, strictly excluding address & phone lines
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Skip address lines from the kop surat (e.g., "Jalan Pemuda No. 12 ...", "Kode Pos 16910")
+    if (/^(?:Jl|Jalan|Jln|Alamat|Telp|Telepon|Fax|Faks|Email|E-mail|Website|Web|Laman|Kode\s*Pos)\b/i.test(line)) continue;
+    // Skip telephone, fax, HP, rekening, NPSN labels
+    if (/\b(?:No\.?\s*(?:Telp|Fax|HP|Telepon|Handphone|Rek|Rekening|NPSN|NSS|NPWP|Gedung|Rumah|RT|RW|Urut|Peserta))\b/i.test(line)) continue;
+    if (/(?:Telp|Fax|Faks|Telepon)\s*[:\/\(]/i.test(line)) continue;
+
+    // Check for "Nomor :" or "No. :" or "NOMOR :"
+    const match = line.match(/(?:^|\b)(?:Nomor\s*Surat|No\.?\s*Surat|Nomor|NOMOR|No\.)\s*[:=\t\s]+\s*([A-Za-z0-9][A-Za-z0-9\s\.\-\/\(\)]{3,80})/i);
+    if (match && match[1]) {
+      const cleaned = cleanNomor(match[1]);
+      if (cleaned) {
+        return cleaned;
       }
     }
   }
 
-  // 2. Standard Indonesian official letter code pattern:
-  // e.g. "421.1/108/Disdik/I/2026", "800/512/BKD-PROV/2026", "045/SE/Disdik/2026", "014/KOMITE-SMAN1/IX/2026"
-  const patternRegex = /\b([A-Za-z0-9]{2,10}[\/\.\-][A-Za-z0-9\.\-]+[\/\.\-][A-Za-z0-9\.\-\/]{2,30})\b/;
-  const pMatch = rawText.match(patternRegex);
-  if (pMatch && pMatch[1]) {
-    let candidate = pMatch[1].trim();
-    if (!candidate.startsWith('http') && !candidate.includes('image/') && !candidate.includes('application/')) {
-      return candidate.replace(/\s*([\/\.-])\s*/g, '$1');
+  // Strategy 2: Look for letter number patterns (code/number/instansi/year) anywhere below kop
+  // e.g. 421.3/145/Disdik/2026, 800/512/BKD-PROV/2026, 014/KOMITE-SMAN1/IX/2026, SE/045/Disdik/2026
+  const patternRegex = /\b([A-Za-z0-9]{2,10}[\/\.\-][A-Za-z0-9\.\-]+[\/\.\-][A-Za-z0-9\.\-\/]{2,35})\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = patternRegex.exec(rawText)) !== null) {
+    const candidate = cleanNomor(match[1]);
+    if (candidate && !candidate.includes('image/') && !candidate.includes('application/')) {
+      return candidate;
     }
   }
 
-  // 3. Special patterns: SE/045/Disdik/2026, B/123/BGP/2026, 005/123-Und/2026
-  const specialMatch = rawText.match(/\b((?:SE|SP|SK|B|KPTS)[\/\-]\d+[\/\-][A-Za-z0-9\.\-\/]{3,30})\b/i);
+  // Strategy 3: Surat Edaran / Surat Keputusan / Surat Tugas pattern (e.g. SE/045/Disdik/2026, 005/123-Und/2026)
+  const specialMatch = rawText.match(/\b((?:SE|SP|SK|ST|B|KPTS)[\/\-]\d+[\/\-][A-Za-z0-9\.\-\/]{3,30})\b/i);
   if (specialMatch && specialMatch[1]) {
-    return specialMatch[1].replace(/\s*([\/\.-])\s*/g, '$1');
+    const cleaned = cleanNomor(specialMatch[1]);
+    if (cleaned) return cleaned;
   }
 
   return '';
