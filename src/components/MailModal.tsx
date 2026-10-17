@@ -545,7 +545,9 @@ export const MailModal: React.FC<MailModalProps> = ({
                     Nomor Surat Asli <span className="text-rose-500">*</span>
                   </span>
                   {nomorSurat && (
-                    <span className="text-[10px] font-semibold text-blue-600">✓ Terisi</span>
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-md">
+                      ✓ Terdeteksi dari Surat
+                    </span>
                   )}
                 </label>
                 <input
@@ -555,13 +557,16 @@ export const MailModal: React.FC<MailModalProps> = ({
                     setNomorSurat(e.target.value);
                     if (formErrors.nomorSurat) setFormErrors((prev) => ({ ...prev, nomorSurat: '' }));
                   }}
-                  placeholder="Contoh: 421.3/145/Disdik/2026"
-                  className={`w-full px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                  placeholder="Contoh: 421.3/145/Disdik/2026 atau SE/045/Disdikpora/2026"
+                  className={`w-full px-3.5 py-2.5 border rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                     formErrors.nomorSurat ? 'border-rose-400 bg-rose-50' : 'bg-slate-50 border-slate-300 focus:bg-white'
                   }`}
                 />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Nomor resmi yang tercetak pada dokumen fisik surat yang diunggah.
+                </p>
                 {formErrors.nomorSurat && (
-                  <p className="text-[11px] text-rose-600 mt-1">{formErrors.nomorSurat}</p>
+                  <p className="text-[11px] text-rose-600 mt-0.5">{formErrors.nomorSurat}</p>
                 )}
               </div>
 
@@ -679,7 +684,9 @@ export const MailModal: React.FC<MailModalProps> = ({
                   Perihal / Pokok Isi Surat <span className="text-rose-500">*</span>
                 </span>
                 {perihal && (
-                  <span className="text-[10px] font-semibold text-blue-600">✓ Terisi</span>
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-md">
+                    ✓ Pokok Isi Surat Terdeteksi
+                  </span>
                 )}
               </label>
               <textarea
@@ -689,13 +696,16 @@ export const MailModal: React.FC<MailModalProps> = ({
                   setPerihal(e.target.value);
                   if (formErrors.perihal) setFormErrors((prev) => ({ ...prev, perihal: '' }));
                 }}
-                placeholder="Tuliskan judul perihal surat secara lengkap dan jelas..."
+                placeholder="Tuliskan pokok permasalahan atau perihal resmi surat secara lengkap..."
                 className={`w-full px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                   formErrors.perihal ? 'border-rose-400 bg-rose-50' : 'bg-slate-50 border-slate-300 focus:bg-white'
                 }`}
               />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Pokok isi atau perihal resmi surat yang diunggah (bukan nama file).
+              </p>
               {formErrors.perihal && (
-                <p className="text-[11px] text-rose-600 mt-1">{formErrors.perihal}</p>
+                <p className="text-[11px] text-rose-600 mt-0.5">{formErrors.perihal}</p>
               )}
             </div>
 
