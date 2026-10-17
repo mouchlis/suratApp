@@ -11,7 +11,6 @@
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'">
     <noscript>
       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
@@ -19,23 +18,20 @@
   </head>
   <body class="bg-slate-900 text-slate-800 antialiased font-sans">
     <div id="root">
-      <!-- Lightweight, fast initial loading preloader that mounts instantly -->
-      <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at top left, #1e1b4b, #0f172a 70%); font-family: system-ui, -apple-system, sans-serif; color: #f8fafc; padding: 20px;">
-        <div style="background: rgba(255, 255, 255, 0.08); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 24px; padding: 32px 28px; max-width: 380px; width: 100%; text-align: center; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);">
-          <div style="width: 54px; height: 54px; margin: 0 auto 16px; border-radius: 16px; background: linear-gradient(135deg, #2563eb, #4f46e5); display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 25px -5px rgba(37, 99, 235, 0.5);">
-            <svg style="width: 28px; height: 28px; fill: none; stroke: #ffffff; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;" viewBox="0 0 24 24">
-              <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
-              <path d="M6 12v5c3 3 9 3 12 0v-5"/>
-            </svg>
-          </div>
-          <h1 style="font-size: 18px; font-weight: 800; margin: 0 0 6px; color: #ffffff; letter-spacing: -0.02em;">Agenda Surat Sekolah</h1>
-          <p style="font-size: 13px; color: #94a3b8; margin: 0 0 20px;">Memuat aplikasi...</p>
-          <div style="width: 32px; height: 32px; margin: 0 auto; border: 3px solid rgba(255,255,255,0.18); border-top-color: #38bdf8; border-radius: 50%; animation: spinLoader 0.8s linear infinite;"></div>
-          <style>@keyframes spinLoader { to { transform: rotate(360deg); } }</style>
-        </div>
+      <div class="fallback-loader" style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at top left, #1e1b4b, #0f172a 70%);">
+        <div style="width: 38px; height: 38px; border: 3px solid rgba(255,255,255,0.15); border-top-color: #38bdf8; border-radius: 50%; animation: spinLoader 0.8s linear infinite;"></div>
+        <style>@keyframes spinLoader { to { transform: rotate(360deg); } }</style>
       </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      setTimeout(function() {
+        var root = document.getElementById('root');
+        if (root && root.querySelector('.fallback-loader')) {
+          root.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#090d16;color:#fff;font-family:system-ui,-apple-system,sans-serif;padding:20px;text-align:center;"><div style="max-width:380px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);padding:28px;border-radius:20px;"><div style="width:48px;height:48px;background:#2563eb;border-radius:14px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;font-size:20px;">⚡</div><h2 style="font-size:18px;margin-bottom:8px;font-weight:700;">Menyiapkan Antarmuka...</h2><p style="font-size:13px;color:#94a3b8;margin-bottom:16px;">Jika halaman belum tampil sempurna, silakan klik tombol di bawah untuk memuat ulang.</p><button onclick="window.location.reload();" style="background:#2563eb;color:#fff;border:none;padding:10px 20px;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px;">Segarkan Halaman</button></div></div>';
+        }
+      }, 4000);
+    </script>
   </body>
 </html>
 
