@@ -29,8 +29,30 @@ export async function openDatabase(): Promise<IDBDatabase> {
   }
 
   return new Promise((resolve, reject) => {
+    let isSettled = false;
+    const timeoutId = setTimeout(() => {
+      if (!isSettled) {
+        isSettled = true;
+        console.warn('[DB] IndexedDB open timeout (>1000ms), fallback ke localStorage');
+        useLocalStorageFallback = true;
+        seedFallbackLocalStorage();
+        reject(new Error('IndexedDB open timeout'));
+      }
+    }, 1000);
+
     try {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+      request.onblocked = () => {
+        if (!isSettled) {
+          isSettled = true;
+          clearTimeout(timeoutId);
+          console.warn('[DB] IndexedDB terblokir oleh sesi lain, beralih ke fallback');
+          useLocalStorageFallback = true;
+          seedFallbackLocalStorage();
+          reject(new Error('IndexedDB blocked'));
+        }
+      };
 
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
@@ -52,18 +74,32 @@ export async function openDatabase(): Promise<IDBDatabase> {
       };
 
       request.onsuccess = (event) => {
-        dbInstance = (event.target as IDBOpenDBRequest).result;
-        resolve(dbInstance);
+        if (!isSettled) {
+          isSettled = true;
+          clearTimeout(timeoutId);
+          dbInstance = (event.target as IDBOpenDBRequest).result;
+          resolve(dbInstance);
+        }
       };
 
       request.onerror = (event) => {
-        console.warn('IndexedDB gagal dibuka, beralih ke fallback localStorage:', (event.target as IDBOpenDBRequest).error);
-        useLocalStorageFallback = true;
-        reject((event.target as IDBOpenDBRequest).error);
+        if (!isSettled) {
+          isSettled = true;
+          clearTimeout(timeoutId);
+          console.warn('IndexedDB gagal dibuka, beralih ke fallback localStorage:', (event.target as IDBOpenDBRequest).error);
+          useLocalStorageFallback = true;
+          seedFallbackLocalStorage();
+          reject((event.target as IDBOpenDBRequest).error);
+        }
       };
     } catch (err) {
-      useLocalStorageFallback = true;
-      reject(err);
+      if (!isSettled) {
+        isSettled = true;
+        clearTimeout(timeoutId);
+        useLocalStorageFallback = true;
+        seedFallbackLocalStorage();
+        reject(err);
+      }
     }
   });
 }
@@ -73,31 +109,62 @@ export async function initDatabase(): Promise<void> {
   try {
     const db = await openDatabase();
 
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction([STORE_MAILS, STORE_SETTINGS], 'readwrite');
-      const mailStore = transaction.objectStore(STORE_MAILS);
-      const countRequest = mailStore.count();
-
-      countRequest.onsuccess = () => {
-        if (countRequest.result === 0) {
-          // Seed default mail records
-          INITIAL_MAIL_ITEMS.forEach((item) => {
-            mailStore.put(item);
-          });
-
-          // Seed school profile
-          const settingsStore = transaction.objectStore(STORE_SETTINGS);
-          settingsStore.put({ key: 'school_profile', value: DEFAULT_SCHOOL_PROFILE });
+    return new Promise((resolve) => {
+      let isSettled = false;
+      const timeoutId = setTimeout(() => {
+        if (!isSettled) {
+          isSettled = true;
+          useLocalStorageFallback = true;
+          seedFallbackLocalStorage();
+          resolve();
         }
-      };
+      }, 1000);
 
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = (e) => {
-        console.warn('Gagal seed ke IndexedDB, beralih ke fallback:', e);
-        useLocalStorageFallback = true;
-        seedFallbackLocalStorage();
-        resolve();
-      };
+      try {
+        const transaction = db.transaction([STORE_MAILS, STORE_SETTINGS], 'readwrite');
+        const mailStore = transaction.objectStore(STORE_MAILS);
+        const countRequest = mailStore.count();
+
+        countRequest.onsuccess = () => {
+          if (countRequest.result === 0) {
+            // Seed default mail records
+            INITIAL_MAIL_ITEMS.forEach((item) => {
+              mailStore.put(item);
+            });
+
+            // Seed school profile
+            const settingsStore = transaction.objectStore(STORE_SETTINGS);
+            settingsStore.put({ key: 'school_profile', value: DEFAULT_SCHOOL_PROFILE });
+          }
+        };
+
+        transaction.oncomplete = () => {
+          if (!isSettled) {
+            isSettled = true;
+            clearTimeout(timeoutId);
+            resolve();
+          }
+        };
+
+        transaction.onerror = (e) => {
+          if (!isSettled) {
+            isSettled = true;
+            clearTimeout(timeoutId);
+            console.warn('Gagal seed ke IndexedDB, beralih ke fallback:', e);
+            useLocalStorageFallback = true;
+            seedFallbackLocalStorage();
+            resolve();
+          }
+        };
+      } catch {
+        if (!isSettled) {
+          isSettled = true;
+          clearTimeout(timeoutId);
+          useLocalStorageFallback = true;
+          seedFallbackLocalStorage();
+          resolve();
+        }
+      }
     });
   } catch (err) {
     console.warn('Menggunakan fallback penyimpanan lokal:', err);

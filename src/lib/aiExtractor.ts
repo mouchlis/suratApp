@@ -1,5 +1,4 @@
 import { MailCategory } from '../types';
-import { createWorker } from 'tesseract.js';
 
 export interface ExtractedLetterData {
   nomorSurat: string;
@@ -96,9 +95,11 @@ export async function resizeImageForOcr(dataUrl: string, maxDimension = 1800): P
 
 /**
  * Client-side OCR using Tesseract.js (runs offline in the browser without server dependency).
+ * Dynamically imported to ensure zero impact on initial app loading speed.
  */
 export async function performClientOcr(imageSource: string): Promise<string> {
   try {
+    const { createWorker } = await import('tesseract.js');
     const worker = await createWorker('eng');
     const ret = await worker.recognize(imageSource);
     await worker.terminate();

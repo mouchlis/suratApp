@@ -1,14 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
 import { Navbar } from './components/Navbar';
 import { Dashboard } from './components/Dashboard';
 import { MailList } from './components/MailList';
-import { RekapView } from './components/RekapView';
-import { MailModal } from './components/MailModal';
-import { MailDetailModal } from './components/MailDetailModal';
-import { DisposisiModal } from './components/DisposisiModal';
-import { DeleteModal } from './components/DeleteModal';
-import { ExportModal } from './components/ExportModal';
-import { SettingsModal } from './components/SettingsModal';
 import { ToastContainer, ToastMessage } from './components/Toast';
 import { LoginPage, AuthUser } from './components/LoginPage';
 import { 
@@ -21,9 +14,18 @@ import {
   resetDatabase 
 } from './lib/db';
 import { downloadFile, exportToCSV, printAgendaBook } from './lib/export';
-import { DEFAULT_SCHOOL_PROFILE } from './lib/sampleData';
+import { DEFAULT_SCHOOL_PROFILE, INITIAL_MAIL_ITEMS } from './lib/sampleData';
 import { MailItem, MailType, SchoolProfile } from './types';
-import { Database, Loader2, Sparkles } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
+
+// Code-split modals & tabs to shrink initial bundle and make initial paint instantaneous
+const RekapView = lazy(() => import('./components/RekapView').then(m => ({ default: m.RekapView })));
+const MailModal = lazy(() => import('./components/MailModal').then(m => ({ default: m.MailModal })));
+const MailDetailModal = lazy(() => import('./components/MailDetailModal').then(m => ({ default: m.MailDetailModal })));
+const DisposisiModal = lazy(() => import('./components/DisposisiModal').then(m => ({ default: m.DisposisiModal })));
+const DeleteModal = lazy(() => import('./components/DeleteModal').then(m => ({ default: m.DeleteModal })));
+const ExportModal = lazy(() => import('./components/ExportModal').then(m => ({ default: m.ExportModal })));
+const SettingsModal = lazy(() => import('./components/SettingsModal').then(m => ({ default: m.SettingsModal })));
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
@@ -36,9 +38,26 @@ export default function App() {
   });
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'masuk' | 'keluar' | 'rekap'>('dashboard');
-  const [mails, setMails] = useState<MailItem[]>([]);
-  const [schoolProfile, setSchoolProfile] = useState<SchoolProfile>(DEFAULT_SCHOOL_PROFILE);
-  const [isLoading, setIsLoading] = useState(true);
+  
+  // Instantaneous state initialization from cache or standard sample data (ZERO load delay)
+  const [mails, setMails] = useState<MailItem[]>(() => {
+    try {
+      const cached = localStorage.getItem('agenda_fallback_mails');
+      return cached ? JSON.parse(cached) : INITIAL_MAIL_ITEMS;
+    } catch {
+      return INITIAL_MAIL_ITEMS;
+    }
+  });
+
+  const [schoolProfile, setSchoolProfile] = useState<SchoolProfile>(() => {
+    try {
+      const cached = localStorage.getItem('agenda_fallback_profile');
+      return cached ? JSON.parse(cached) : DEFAULT_SCHOOL_PROFILE;
+    } catch {
+      return DEFAULT_SCHOOL_PROFILE;
+    }
+  });
+
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   // Modals state
@@ -82,25 +101,34 @@ export default function App() {
       setSchoolProfile(loadedProfile);
     } catch (err) {
       console.error('Failed to load database:', err);
-      showToast('error', 'Gagal memuat database', 'Terjadi kendala saat membaca penyimpanan lokal.');
-    } finally {
-      setIsLoading(false);
     }
-  }, [showToast]);
+  }, []);
 
-  // Initial Boot
+  // Background non-blocking sync with storage
   useEffect(() => {
+    let isMounted = true;
     async function boot() {
       try {
         await initDatabase();
-        await refreshData();
+        if (isMounted) {
+          const [loadedMails, loadedProfile] = await Promise.all([
+            getAllMails(),
+            getSchoolProfile(),
+          ]);
+          if (isMounted) {
+            setMails(loadedMails);
+            setSchoolProfile(loadedProfile);
+          }
+        }
       } catch (err) {
-        console.error('Init database error:', err);
-        setIsLoading(false);
+        console.warn('Background database sync error:', err);
       }
     }
     boot();
-  }, [refreshData]);
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Login handler
   const handleLoginSuccess = (user: AuthUser) => {
@@ -231,21 +259,7 @@ export default function App() {
     }
   };
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-        <div className="backdrop-blur-2xl bg-white/80 p-8 rounded-3xl border border-white/60 shadow-2xl text-center space-y-3">
-          <div className="w-12 h-12 mx-auto rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center animate-spin shadow-lg shadow-blue-500/30">
-            <Loader2 className="w-6 h-6" />
-          </div>
-          <h2 className="text-base font-black text-slate-800">Menyiapkan Agenda Surat Sekolah...</h2>
-          <p className="text-xs text-slate-500 font-medium">Memuat basis data kearsipan lokal</p>
-        </div>
-      </div>
-    );
-  }
-
-  // If user is not logged in, render the dedicated Glassmorphic Login Page
+  // If user is not logged in, render the dedicated Glassmorphic Login Page immediately
   if (!currentUser) {
     return (
       <>
@@ -342,11 +356,13 @@ export default function App() {
           )}
 
           {activeTab === 'rekap' && (
-            <RekapView
-              mails={mails}
-              schoolProfile={schoolProfile}
-              onOpenExportModal={() => setIsExportModalOpen(true)}
-            />
+            <Suspense fallback={<div className="p-12 text-center text-slate-400 font-medium">Memuat rekapitulasi data...</div>}>
+              <RekapView
+                mails={mails}
+                schoolProfile={schoolProfile}
+                onOpenExportModal={() => setIsExportModalOpen(true)}
+              />
+            </Suspense>
           )}
         </main>
 
@@ -370,73 +386,87 @@ export default function App() {
         </footer>
       </div>
 
-      {/* Modals with Glassmorphic styling */}
-      <MailModal
-        isOpen={isMailModalOpen}
-        type={mailModalType}
-        initialMail={editingMail}
-        onClose={() => {
-          setIsMailModalOpen(false);
-          setEditingMail(null);
-        }}
-        onSave={handleSaveMail}
-      />
+      {/* Code-split Modals with lazy loading on demand */}
+      <Suspense fallback={null}>
+        {isMailModalOpen && (
+          <MailModal
+            isOpen={isMailModalOpen}
+            type={mailModalType}
+            initialMail={editingMail}
+            onClose={() => {
+              setIsMailModalOpen(false);
+              setEditingMail(null);
+            }}
+            onSave={handleSaveMail}
+          />
+        )}
 
-      <MailDetailModal
-        isOpen={isDetailModalOpen}
-        mail={detailMail}
-        schoolProfile={schoolProfile}
-        onClose={() => {
-          setIsDetailModalOpen(false);
-          setDetailMail(null);
-        }}
-        onEdit={(mail) => {
-          setIsDetailModalOpen(false);
-          handleEditMail(mail);
-        }}
-        onPrintDisposisi={(mail) => {
-          setIsDetailModalOpen(false);
-          handlePrintDisposisi(mail);
-        }}
-        onDownloadFile={handleDownloadFile}
-      />
+        {isDetailModalOpen && (
+          <MailDetailModal
+            isOpen={isDetailModalOpen}
+            mail={detailMail}
+            schoolProfile={schoolProfile}
+            onClose={() => {
+              setIsDetailModalOpen(false);
+              setDetailMail(null);
+            }}
+            onEdit={(mail) => {
+              setIsDetailModalOpen(false);
+              handleEditMail(mail);
+            }}
+            onPrintDisposisi={(mail) => {
+              setIsDetailModalOpen(false);
+              handlePrintDisposisi(mail);
+            }}
+            onDownloadFile={handleDownloadFile}
+          />
+        )}
 
-      <DisposisiModal
-        isOpen={isDisposisiModalOpen}
-        mail={disposisiMail}
-        schoolProfile={schoolProfile}
-        onClose={() => {
-          setIsDisposisiModalOpen(false);
-          setDisposisiMail(null);
-        }}
-      />
+        {isDisposisiModalOpen && (
+          <DisposisiModal
+            isOpen={isDisposisiModalOpen}
+            mail={disposisiMail}
+            schoolProfile={schoolProfile}
+            onClose={() => {
+              setIsDisposisiModalOpen(false);
+              setDisposisiMail(null);
+            }}
+          />
+        )}
 
-      <DeleteModal
-        isOpen={isDeleteModalOpen}
-        mail={deleteTargetMail}
-        onClose={() => {
-          setIsDeleteModalOpen(false);
-          setDeleteTargetMail(null);
-        }}
-        onConfirm={handleConfirmDelete}
-      />
+        {isDeleteModalOpen && (
+          <DeleteModal
+            isOpen={isDeleteModalOpen}
+            mail={deleteTargetMail}
+            onClose={() => {
+              setIsDeleteModalOpen(false);
+              setDeleteTargetMail(null);
+            }}
+            onConfirm={handleConfirmDelete}
+          />
+        )}
 
-      <ExportModal
-        isOpen={isExportModalOpen}
-        mails={mails}
-        schoolProfile={schoolProfile}
-        onClose={() => setIsExportModalOpen(false)}
-        onDataRestored={refreshData}
-      />
+        {isExportModalOpen && (
+          <ExportModal
+            isOpen={isExportModalOpen}
+            mails={mails}
+            schoolProfile={schoolProfile}
+            onClose={() => setIsExportModalOpen(false)}
+            onDataRestored={refreshData}
+          />
+        )}
 
-      <SettingsModal
-        isOpen={isSettingsModalOpen}
-        profile={schoolProfile}
-        totalMails={mails.length}
-        onClose={() => setIsSettingsModalOpen(false)}
-        onSaveProfile={handleSaveProfile}
-        onResetDatabase={handleResetDatabase}
-      />
+        {isSettingsModalOpen && (
+          <SettingsModal
+            isOpen={isSettingsModalOpen}
+            profile={schoolProfile}
+            totalMails={mails.length}
+            onClose={() => setIsSettingsModalOpen(false)}
+            onSaveProfile={handleSaveProfile}
+            onResetDatabase={handleResetDatabase}
+          />
+        )}
+      </Suspense>
 
       {/* Floating Toast Notification Container */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
