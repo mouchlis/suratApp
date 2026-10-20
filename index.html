@@ -10,38 +10,14 @@
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <script>
-      // 1. Auto-handle GitHub Pages: if served from repo root without build, route to compiled /dist/
+      // SPA route restorer for GitHub Pages redirects from 404.html
       (function() {
-        var l = window.location;
-        if (l.hostname.endsWith('github.io')) {
-          var p = l.pathname;
-          // Ensure trailing slash for directory paths
-          if (!p.endsWith('/') && !p.split('/').pop().includes('.')) {
-            l.replace(p + '/' + l.search + l.hash);
-            return;
-          }
-          // If this is the uncompiled source root (no built assets referenced) and not yet in /dist/,
-          // redirect seamlessly into /dist/ where compiled production bundles reside
-          var isCompiled = document.querySelector('script[src*="assets/"]');
-          if (!isCompiled && !p.includes('/dist/')) {
-            var repoBase = p.endsWith('/') ? p : p + '/';
-            l.replace(repoBase + 'dist/' + l.search + l.hash);
-            return;
-          }
+        var redirect = sessionStorage.redirect;
+        delete sessionStorage.redirect;
+        if (redirect && redirect !== location.href) {
+          history.replaceState(null, null, redirect);
         }
       })();
-
-      // 2. Resource loading error capture (detects 404 on scripts or stylesheets immediately)
-      window.addEventListener('error', function(e) {
-        if (e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK')) {
-          var src = e.target.src || e.target.href;
-          console.error('[Resource Error]', src);
-          var root = document.getElementById('root');
-          if (root && root.querySelector('.fallback-loader')) {
-            root.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#090d16;color:#fff;font-family:system-ui,-apple-system,sans-serif;padding:20px;text-align:center;"><div style="max-width:420px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);padding:28px;border-radius:20px;"><div style="width:48px;height:48px;background:#ef4444;border-radius:14px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;font-size:20px;">⚠️</div><h2 style="font-size:18px;margin-bottom:8px;font-weight:700;">Gagal Memuat Berkas</h2><p style="font-size:12px;color:#94a3b8;margin-bottom:16px;word-break:break-all;">Aset web tidak dapat diunduh: ' + (src || 'skrip aplikasi') + '</p><button onclick="window.location.reload(true);" style="background:#2563eb;color:#fff;border:none;padding:10px 20px;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px;">Muat Ulang Halaman</button></div></div>';
-          }
-        }
-      }, true);
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -49,6 +25,7 @@
     <noscript>
       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
     </noscript>
+    <link rel="stylesheet" crossorigin href="./assets/index.css">
   </head>
   <body class="bg-slate-900 text-slate-800 antialiased font-sans">
     <div id="root">
@@ -57,7 +34,6 @@
         <style>@keyframes spinLoader { to { transform: rotate(360deg); } }</style>
       </div>
     </div>
-    <script type="module" src="./src/main.tsx"></script>
+    <script type="module" crossorigin src="./assets/index.js"></script>
   </body>
 </html>
-

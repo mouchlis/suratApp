@@ -1,30 +1,45 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import { defineConfig } from 'vite';
+import { defineConfig, Plugin } from 'vite';
 
-// Automatically detect base path for GitHub Pages and local environments:
-// 1. BASE_PATH env var (provided by actions/configure-pages or custom deploy)
-// 2. GITHUB_REPOSITORY (e.g. 'username/repo-name' in GitHub Actions) -> '/repo-name/'
-// 3. Fallback to './' for local preview or custom subdirectories
-const getBasePath = () => {
-  if (process.env.BASE_PATH) {
-    return process.env.BASE_PATH.endsWith('/') ? process.env.BASE_PATH : `${process.env.BASE_PATH}/`;
-  }
-  if (process.env.GITHUB_REPOSITORY) {
-    const repo = process.env.GITHUB_REPOSITORY.split('/')[1];
-    return repo ? `/${repo}/` : './';
-  }
-  return './';
+// Plugin to allow index.html on disk to refer to prebuilt ./assets/index.js (for direct GitHub Pages serving from root),
+// while dynamically switching to /src/main.tsx during Vite dev and Vite build.
+const htmlEntrySwitcher: Plugin = {
+  name: 'html-entry-switcher',
+  transformIndexHtml: {
+    order: 'pre',
+    handler(html) {
+      // In Vite dev & build, point entry script to /src/main.tsx
+      return html
+        .replace(/<script[^>]*src=["']\.\/assets\/index\.js["'][^>]*><\/script>/gi, '<script type="module" src="/src/main.tsx"></script>')
+        .replace(/<link[^>]*href=["']\.\/assets\/index\.css["'][^>]*>/gi, '');
+    },
+  },
 };
 
 export default defineConfig(() => {
   return {
-    base: getBasePath(),
-    plugins: [react(), tailwindcss()],
+    base: './',
+    plugins: [htmlEntrySwitcher, react(), tailwindcss()],
     resolve: {
       alias: {
         '@': path.resolve(import.meta.dirname || '.', '.'),
+      },
+    },
+    build: {
+      outDir: 'dist',
+      rollupOptions: {
+        output: {
+          entryFileNames: 'assets/index.js',
+          chunkFileNames: 'assets/[name]-[hash].js',
+          assetFileNames: (assetInfo) => {
+            if (assetInfo.name && assetInfo.name.endsWith('.css')) {
+              return 'assets/index.css';
+            }
+            return 'assets/[name]-[hash].[ext]';
+          },
+        },
       },
     },
     server: {
