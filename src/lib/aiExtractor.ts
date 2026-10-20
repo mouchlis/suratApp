@@ -47,7 +47,28 @@ export function cleanPerihalSubject(raw: string, defaultTopic: string = 'Penyamp
  * Resize high-resolution image uploads on canvas to optimize transfer speed,
  * memory consumption, and OCR efficiency.
  */
-export async function resizeImageForOcr(dataUrl: string, maxDimension = 1800): Promise<string> {
+// Shared singleton promise for client-side Tesseract.js worker
+let sharedWorkerPromise: Promise<any> | null = null;
+
+async function getSharedOcrWorker(): Promise<any> {
+  if (!sharedWorkerPromise) {
+    sharedWorkerPromise = (async () => {
+      const { createWorker } = await import('tesseract.js');
+      const worker = await createWorker('eng');
+      return worker;
+    })().catch((err) => {
+      sharedWorkerPromise = null;
+      throw err;
+    });
+  }
+  return sharedWorkerPromise;
+}
+
+/**
+ * Resize and optimize high-resolution image uploads on canvas.
+ * Applies gentle contrast enhancement for crisper text recognition.
+ */
+export async function resizeImageForOcr(dataUrl: string, maxDimension = 1400, enhanceContrast = false): Promise<string> {
   if (typeof window === 'undefined' || !dataUrl.startsWith('data:image/')) {
     return dataUrl;
   }
@@ -63,16 +84,14 @@ export async function resizeImageForOcr(dataUrl: string, maxDimension = 1800): P
       let width = img.width;
       let height = img.height;
 
-      if (width <= maxDimension && height <= maxDimension) {
-        return resolve(dataUrl);
-      }
-
-      if (width > height) {
-        height = Math.round((height * maxDimension) / width);
-        width = maxDimension;
-      } else {
-        width = Math.round((width * maxDimension) / height);
-        height = maxDimension;
+      if (width > maxDimension || height > maxDimension) {
+        if (width > height) {
+          height = Math.round((height * maxDimension) / width);
+          width = maxDimension;
+        } else {
+          width = Math.round((width * maxDimension) / height);
+          height = maxDimension;
+        }
       }
 
       const canvas = document.createElement('canvas');
@@ -86,7 +105,25 @@ export async function resizeImageForOcr(dataUrl: string, maxDimension = 1800): P
       ctx.fillRect(0, 0, width, height);
       ctx.drawImage(img, 0, 0, width, height);
 
-      resolve(canvas.toDataURL('image/jpeg', 0.88));
+      // Contrast enhancement for OCR if requested
+      if (enhanceContrast) {
+        try {
+          const imgData = ctx.getImageData(0, 0, width, height);
+          const data = imgData.data;
+          for (let i = 0; i < data.length; i += 4) {
+            const gray = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+            const contrast = gray < 130 ? Math.max(0, gray * 0.7) : Math.min(255, gray * 1.25);
+            data[i] = contrast;
+            data[i + 1] = contrast;
+            data[i + 2] = contrast;
+          }
+          ctx.putImageData(imgData, 0, 0);
+        } catch {
+          // ignore canvas pixel access restrictions
+        }
+      }
+
+      resolve(canvas.toDataURL('image/jpeg', 0.85));
     };
     img.onerror = () => resolve(dataUrl);
     img.src = dataUrl;
@@ -95,15 +132,14 @@ export async function resizeImageForOcr(dataUrl: string, maxDimension = 1800): P
 
 /**
  * Client-side OCR using Tesseract.js (runs offline in the browser without server dependency).
- * Dynamically imported to ensure zero impact on initial app loading speed.
+ * Re-uses a shared worker instance for near-instant repeated recognitions.
  */
 export async function performClientOcr(imageSource: string): Promise<string> {
   try {
-    const { createWorker } = await import('tesseract.js');
-    const worker = await createWorker('eng');
-    const ret = await worker.recognize(imageSource);
-    await worker.terminate();
-    return ret.data.text || '';
+    const optimized = await resizeImageForOcr(imageSource, 1280, true);
+    const worker = await getSharedOcrWorker();
+    const ret = await worker.recognize(optimized);
+    return ret?.data?.text || '';
   } catch (err) {
     console.warn('[OCR] Client-side OCR error:', err);
     return '';
@@ -453,74 +489,107 @@ export function extractFallbackFromData(
 }
 
 /**
- * Main extractor: First attempts server-side Gemini AI API with multi-model fallback.
- * If server is unavailable (e.g. static GitHub Pages), seamlessly uses local OCR or text stream extraction.
+ * Main extractor:
+ * 1. Fast path: Direct PDF text stream extraction (< 20ms) if embedded text is detected.
+ * 2. High-speed Server Gemini AI API (when running in full-stack dev/server).
+ * 3. Client-side OCR with worker singleton and image optimization (runs offline on GitHub Pages).
+ * 4. Rule-based contextual fallback.
  */
 export async function extractLetterDataFromDoc(
   fileDataUrl: string,
   fileName: string,
-  fileType: string
+  fileType: string,
+  onProgress?: (status: string) => void
 ): Promise<ExtractedLetterData> {
-  // Optimize large images to prevent timeout
+  // Fast path 1: If PDF has direct embedded text, extract immediately (< 25ms!)
+  if (fileDataUrl.includes('application/pdf')) {
+    onProgress?.('Membaca struktur teks PDF...');
+    const directText = extractReadableTextFromDocument(fileDataUrl);
+    const quickNomor = detectNomorSurat(directText);
+    const quickPerihal = detectPerihal(directText);
+    if (quickNomor && quickPerihal) {
+      console.log('[Fast-PDF] Berhasil membaca teks langsung dari PDF:', { quickNomor, quickPerihal });
+      return extractFallbackFromData(fileDataUrl, fileName, directText);
+    }
+  }
+
+  // Optimize image size (1400px, 0.85 quality) to minimize upload payload and inference time
   let processedDataUrl = fileDataUrl;
   if (fileDataUrl.startsWith('data:image/') && !fileDataUrl.includes('image/svg+xml')) {
+    onProgress?.('Mengoptimalkan ukuran berkas...');
     try {
-      processedDataUrl = await resizeImageForOcr(fileDataUrl, 1800);
+      processedDataUrl = await resizeImageForOcr(fileDataUrl, 1400);
     } catch {
       processedDataUrl = fileDataUrl;
     }
   }
 
-  // 1. Attempt Server-Side Gemini API
-  try {
-    const response = await fetch('/api/extract-letter-data', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        fileData: processedDataUrl,
-        fileType,
-        fileName,
-      }),
-    });
+  // Detect static host (e.g. GitHub Pages) where /api/ endpoints do not exist
+  const isStaticHost = typeof window !== 'undefined' && (
+    window.location.hostname.endsWith('github.io') ||
+    window.location.protocol === 'file:'
+  );
 
-    if (response.ok) {
-      const result = await response.json();
-      if (result.success && result.data) {
-        const rawPerihal = result.data.perihal || '';
-        const cleanedPerihal = cleanPerihalSubject(rawPerihal, 'Penyampaian Informasi dan Koordinasi Kedinasan Sekolah');
+  // 1. Attempt Server-Side Gemini API (when server is available)
+  if (!isStaticHost) {
+    onProgress?.('Menganalisis dokumen dengan Google Gemini AI...');
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-        let cleanedNomor = (result.data.nomorSurat || '')
-          .replace(/^(nomor\s*surat|nomor|no\.?\s*surat|no\.?)\s*[:=\-\s]*/i, '')
-          .replace(/\s*([\/\.-])\s*/g, '$1')
-          .replace(/^["'\s:]+|["'\s]+$/g, '')
-          .trim();
+      const response = await fetch('/api/extract-letter-data', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fileData: processedDataUrl,
+          fileType,
+          fileName,
+        }),
+        signal: controller.signal,
+      });
 
-        // If nomor surat from AI looks like street number ("45") or phone, clear it
-        if (/telp|fax|faks|telepon|http/i.test(cleanedNomor) || /^\d{1,4}$/.test(cleanedNomor)) {
-          cleanedNomor = '';
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const result = await response.json();
+        if (result.success && result.data) {
+          const rawPerihal = result.data.perihal || '';
+          const cleanedPerihal = cleanPerihalSubject(rawPerihal, 'Penyampaian Informasi dan Koordinasi Kedinasan Sekolah');
+
+          let cleanedNomor = (result.data.nomorSurat || '')
+            .replace(/^(nomor\s*surat|nomor|no\.?\s*surat|no\.?)\s*[:=\-\s]*/i, '')
+            .replace(/\s*([\/\.-])\s*/g, '$1')
+            .replace(/^["'\s:]+|["'\s]+$/g, '')
+            .trim();
+
+          // If nomor surat from AI looks like street number ("45") or phone, clear it
+          if (/telp|fax|faks|telepon|http/i.test(cleanedNomor) || /^\d{1,4}$/.test(cleanedNomor)) {
+            cleanedNomor = '';
+          }
+
+          return {
+            nomorSurat: cleanedNomor,
+            tanggalSurat: result.data.tanggalSurat || new Date().toISOString().slice(0, 10),
+            pengirim: result.data.pengirim || 'Dinas Pendidikan / Instansi Terkait',
+            perihal: cleanedPerihal,
+            sifat: (result.data.sifat as MailCategory) || 'Biasa',
+            keterangan: result.data.keterangan || `Perihal: ${cleanedPerihal}`,
+            source: 'ai',
+          };
         }
-
-        return {
-          nomorSurat: cleanedNomor,
-          tanggalSurat: result.data.tanggalSurat || new Date().toISOString().slice(0, 10),
-          pengirim: result.data.pengirim || 'Dinas Pendidikan / Instansi Terkait',
-          perihal: cleanedPerihal,
-          sifat: (result.data.sifat as MailCategory) || 'Biasa',
-          keterangan: result.data.keterangan || `Perihal: ${cleanedPerihal}`,
-          source: 'ai',
-        };
       }
+    } catch (err) {
+      console.warn('[AI Extractor] Server API tidak terjangkau atau timeout, beralih ke OCR peramban:', err);
     }
-  } catch (err) {
-    console.warn('[AI Extractor] Server API tidak terjangkau (misal di GitHub Pages statis), beralih ke OCR/ekstraksi lokal:', err);
   }
 
-  // 2. Client-side OCR for Images when deployed to static hosts (GitHub Pages) or server offline
+  // 2. Client-side OCR for Images (runs offline on GitHub Pages or when server is unavailable)
   if (processedDataUrl.startsWith('data:image/') && !processedDataUrl.includes('image/svg+xml')) {
+    onProgress?.('Membaca teks dokumen via OCR di peramban...');
     try {
-      console.log('[OCR] Memulai analisis teks OCR di browser...');
+      console.log('[OCR] Memulai analisis teks OCR lokal...');
       const ocrText = await performClientOcr(processedDataUrl);
       if (ocrText && ocrText.trim().length > 15) {
         console.log('[OCR] Hasil OCR teks berhasil diekstrak:', ocrText.slice(0, 150));
@@ -532,5 +601,6 @@ export async function extractLetterDataFromDoc(
   }
 
   // 3. Graceful stream fallback for PDF and SVG
+  onProgress?.('Menyelesaikan ekstraksi data dokumen...');
   return extractFallbackFromData(processedDataUrl, fileName);
 }

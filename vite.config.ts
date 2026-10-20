@@ -13,7 +13,8 @@ const htmlEntrySwitcher: Plugin = {
       // In Vite dev & build, point entry script to /src/main.tsx
       return html
         .replace(/<script[^>]*src=["']\.\/assets\/index\.js["'][^>]*><\/script>/gi, '<script type="module" src="/src/main.tsx"></script>')
-        .replace(/<link[^>]*href=["']\.\/assets\/index\.css["'][^>]*>/gi, '');
+        .replace(/<link[^>]*href=["']\.\/assets\/index\.css["'][^>]*>/gi, '')
+        .replace(/<link[^>]*href=["']\.\/assets\/index\.js["'][^>]*>/gi, '');
     },
   },
 };
@@ -29,6 +30,10 @@ export default defineConfig(() => {
     },
     build: {
       outDir: 'dist',
+      target: 'es2020',
+      minify: 'esbuild',
+      cssCodeSplit: false,
+      chunkSizeWarningLimit: 1200,
       rollupOptions: {
         output: {
           entryFileNames: 'assets/index.js',

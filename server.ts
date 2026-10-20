@@ -194,12 +194,11 @@ INFORMASI LAINNYA:
       required: ['nomorSurat', 'tanggalSurat', 'pengirim', 'perihal'],
     };
 
-    // Cascade through available models for high availability
+    // High-speed model cascade for fast multimodal extraction
     const candidateModels = [
-      'gemini-3.8-flash',
-      'gemini-flash-latest',
       'gemini-3.1-flash-lite',
-      'gemini-3.5-flash',
+      'gemini-flash-latest',
+      'gemini-3.8-flash',
     ];
 
     let outputText = '';
@@ -217,8 +216,13 @@ INFORMASI LAINNYA:
             },
           ],
           config: {
+            systemInstruction: 'Anda adalah Asisten Analisis Tata Naskah Dinas Sekolah Indonesia yang sangat akurat dan cepat. Ekstrak nomor surat asli, tanggal, pengirim, perihal, dan sifat surat dari dokumen yang diberikan.',
             responseMimeType: 'application/json',
             responseSchema,
+            thinkingConfig: {
+              thinkingBudget: 0, // Disable thinking overhead to achieve maximum response speed
+            },
+            temperature: 0.1,
           },
         });
 

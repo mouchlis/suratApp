@@ -72,6 +72,7 @@ export const MailModal: React.FC<MailModalProps> = ({
 
   // AI Auto-Detection states
   const [isExtracting, setIsExtracting] = useState(false);
+  const [extractionStatus, setExtractionStatus] = useState('Menganalisis dokumen surat...');
   const [extractionNotice, setExtractionNotice] = useState<{
     message: string;
     source: 'ai' | 'fallback' | 'ocr';
@@ -151,10 +152,16 @@ export const MailModal: React.FC<MailModalProps> = ({
   // Trigger Automatic Field Extraction (AI / OCR)
   const triggerAutoExtraction = async (dataUrl: string, fileName: string, fileType: string) => {
     setIsExtracting(true);
+    setExtractionStatus('Mempersiapkan analisis dokumen...');
     setExtractionNotice(null);
 
     try {
-      const extracted = await extractLetterDataFromDoc(dataUrl, fileName, fileType);
+      const extracted = await extractLetterDataFromDoc(
+        dataUrl,
+        fileName,
+        fileType,
+        (status) => setExtractionStatus(status)
+      );
       const filledFields: string[] = [];
 
       if (extracted.nomorSurat) {
@@ -372,12 +379,12 @@ export const MailModal: React.FC<MailModalProps> = ({
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* AI Auto-Extraction Status Notification */}
           {isExtracting && (
-            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 text-blue-900 flex items-center gap-3 text-xs animate-pulse shadow-xs">
-              <Loader2 className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-blue-50 via-indigo-50 to-blue-50 border border-blue-200 text-blue-900 flex items-center gap-3 text-xs shadow-xs animate-in fade-in">
+              <Loader2 className="w-5 h-5 text-indigo-600 animate-spin shrink-0" />
               <div className="flex-1">
-                <span className="font-bold block">Sedang Menganalisis Berkas Surat...</span>
-                <span className="text-blue-700 text-[11px]">
-                  Mendeteksi nomor surat, tanggal, pengirim, dan perihal secara otomatis.
+                <span className="font-bold block text-slate-900">{extractionStatus}</span>
+                <span className="text-indigo-700 text-[11px]">
+                  Mendeteksi nomor surat asli, tanggal, pengirim, dan perihal secara akurat.
                 </span>
               </div>
             </div>
