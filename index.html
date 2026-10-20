@@ -10,13 +10,23 @@
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <script>
-      // 1. Auto-handle GitHub Pages subpath trailing slash so relative assets always resolve correctly
+      // 1. Auto-handle GitHub Pages: if served from repo root without build, route to compiled /dist/
       (function() {
         var l = window.location;
         if (l.hostname.endsWith('github.io')) {
           var p = l.pathname;
+          // Ensure trailing slash for directory paths
           if (!p.endsWith('/') && !p.split('/').pop().includes('.')) {
             l.replace(p + '/' + l.search + l.hash);
+            return;
+          }
+          // If this is the uncompiled source root (no built assets referenced) and not yet in /dist/,
+          // redirect seamlessly into /dist/ where compiled production bundles reside
+          var isCompiled = document.querySelector('script[src*="assets/"]');
+          if (!isCompiled && !p.includes('/dist/')) {
+            var repoBase = p.endsWith('/') ? p : p + '/';
+            l.replace(repoBase + 'dist/' + l.search + l.hash);
+            return;
           }
         }
       })();
@@ -47,7 +57,7 @@
         <style>@keyframes spinLoader { to { transform: rotate(360deg); } }</style>
       </div>
     </div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="./src/main.tsx"></script>
   </body>
 </html>
 
