@@ -9,6 +9,30 @@
     <meta property="og:description" content="Aplikasi manajemen agenda surat masuk dan surat keluar sekolah modern, aman, responsif dengan penyimpanan berkas permanen dan ekspor data." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      // 1. Auto-handle GitHub Pages subpath trailing slash so relative assets always resolve correctly
+      (function() {
+        var l = window.location;
+        if (l.hostname.endsWith('github.io')) {
+          var p = l.pathname;
+          if (!p.endsWith('/') && !p.split('/').pop().includes('.')) {
+            l.replace(p + '/' + l.search + l.hash);
+          }
+        }
+      })();
+
+      // 2. Resource loading error capture (detects 404 on scripts or stylesheets immediately)
+      window.addEventListener('error', function(e) {
+        if (e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK')) {
+          var src = e.target.src || e.target.href;
+          console.error('[Resource Error]', src);
+          var root = document.getElementById('root');
+          if (root && root.querySelector('.fallback-loader')) {
+            root.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#090d16;color:#fff;font-family:system-ui,-apple-system,sans-serif;padding:20px;text-align:center;"><div style="max-width:420px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);padding:28px;border-radius:20px;"><div style="width:48px;height:48px;background:#ef4444;border-radius:14px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;font-size:20px;">⚠️</div><h2 style="font-size:18px;margin-bottom:8px;font-weight:700;">Gagal Memuat Berkas</h2><p style="font-size:12px;color:#94a3b8;margin-bottom:16px;word-break:break-all;">Aset web tidak dapat diunduh: ' + (src || 'skrip aplikasi') + '</p><button onclick="window.location.reload(true);" style="background:#2563eb;color:#fff;border:none;padding:10px 20px;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px;">Muat Ulang Halaman</button></div></div>';
+          }
+        }
+      }, true);
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'">
@@ -24,14 +48,6 @@
       </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
-    <script>
-      setTimeout(function() {
-        var root = document.getElementById('root');
-        if (root && root.querySelector('.fallback-loader')) {
-          root.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#090d16;color:#fff;font-family:system-ui,-apple-system,sans-serif;padding:20px;text-align:center;"><div style="max-width:380px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);padding:28px;border-radius:20px;"><div style="width:48px;height:48px;background:#2563eb;border-radius:14px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;font-size:20px;">⚡</div><h2 style="font-size:18px;margin-bottom:8px;font-weight:700;">Menyiapkan Antarmuka...</h2><p style="font-size:13px;color:#94a3b8;margin-bottom:16px;">Jika halaman belum tampil sempurna, silakan klik tombol di bawah untuk memuat ulang.</p><button onclick="window.location.reload();" style="background:#2563eb;color:#fff;border:none;padding:10px 20px;border-radius:10px;font-weight:700;cursor:pointer;font-size:13px;">Segarkan Halaman</button></div></div>';
-        }
-      }, 4000);
-    </script>
   </body>
 </html>
 
